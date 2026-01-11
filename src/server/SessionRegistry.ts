@@ -47,8 +47,20 @@ export class SessionRegistry extends EventEmitter {
       removedIds.delete(id)
     }
 
+    // Check if anything actually changed
+    const hasChanges =
+      removedIds.size > 0 ||
+      nextMap.size !== this.sessions.size ||
+      Array.from(nextMap.values()).some((next) => {
+        const existing = this.sessions.get(next.id)
+        return !existing || !sessionsEqual(existing, next)
+      })
+
     this.sessions = nextMap
-    this.emit('sessions', this.getAll())
+
+    if (hasChanges) {
+      this.emit('sessions', this.getAll())
+    }
 
     for (const id of removedIds) {
       this.emit('session-removed', id)
@@ -94,4 +106,16 @@ function pickLatestActivity(
   }
 
   return incomingTime > existingTime ? incoming : existing
+}
+
+function sessionsEqual(a: Session, b: Session): boolean {
+  return (
+    a.id === b.id &&
+    a.name === b.name &&
+    a.status === b.status &&
+    a.lastActivity === b.lastActivity &&
+    a.projectPath === b.projectPath &&
+    a.agentType === b.agentType &&
+    a.command === b.command
+  )
 }

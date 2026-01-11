@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, useReducer } from 'react'
 import { motion, AnimatePresence, useReducedMotion } from 'motion/react'
 import type { Session } from '@shared/types'
 import { sortSessions } from '../utils/sessions'
@@ -36,6 +36,15 @@ const statusTextClass: Record<Session['status'], string> = {
   unknown: 'text-muted',
 }
 
+// Force re-render every 30s to update relative timestamps
+function useTimestampRefresh() {
+  const [, forceUpdate] = useReducer((x: number) => x + 1, 0)
+  useEffect(() => {
+    const id = setInterval(forceUpdate, 30000)
+    return () => clearInterval(id)
+  }, [])
+}
+
 export default function SessionList({
   sessions,
   selectedSessionId,
@@ -44,6 +53,7 @@ export default function SessionList({
   onSelect,
   onRename,
 }: SessionListProps) {
+  useTimestampRefresh()
   const [editingSessionId, setEditingSessionId] = useState<string | null>(null)
   const prefersReducedMotion = useReducedMotion()
   const sessionSortMode = useSettingsStore((state) => state.sessionSortMode)
