@@ -5,20 +5,38 @@
 
 import { useEffect } from 'react'
 
+export function updateKeyboardInset({
+  viewport,
+  win,
+  doc,
+}: {
+  viewport: VisualViewport | null | undefined
+  win: Window
+  doc: Document
+}): boolean {
+  if (!viewport) {
+    return false
+  }
+
+  const keyboardHeight = win.innerHeight - viewport.height
+  doc.documentElement.style.setProperty(
+    '--keyboard-inset',
+    `${Math.max(0, keyboardHeight)}px`
+  )
+  return true
+}
+
+export function clearKeyboardInset(doc: Document) {
+  doc.documentElement.style.removeProperty('--keyboard-inset')
+}
+
 export function useVisualViewport() {
   useEffect(() => {
     const viewport = window.visualViewport
     if (!viewport) return
 
     const updateViewport = () => {
-      // Calculate the keyboard height (difference between layout and visual viewport)
-      const keyboardHeight = window.innerHeight - viewport.height
-
-      // Set CSS custom property for keyboard offset
-      document.documentElement.style.setProperty(
-        '--keyboard-inset',
-        `${Math.max(0, keyboardHeight)}px`
-      )
+      updateKeyboardInset({ viewport, win: window, doc: document })
     }
 
     // Initial update
@@ -31,7 +49,7 @@ export function useVisualViewport() {
     return () => {
       viewport.removeEventListener('resize', updateViewport)
       viewport.removeEventListener('scroll', updateViewport)
-      document.documentElement.style.removeProperty('--keyboard-inset')
+      clearKeyboardInset(document)
     }
   }, [])
 }

@@ -10,6 +10,12 @@ interface NewSessionModalProps {
   activeProjectPath?: string
 }
 
+const COMMAND_PRESETS = [
+  { label: 'Claude', value: 'claude' },
+  { label: 'Codex', value: 'codex' },
+  { label: 'Custom', value: '' },
+] as const
+
 export default function NewSessionModal({
   isOpen,
   onClose,
@@ -22,12 +28,14 @@ export default function NewSessionModal({
   const [projectPath, setProjectPath] = useState('')
   const [name, setName] = useState('')
   const [command, setCommand] = useState('')
+  const [commandMode, setCommandMode] = useState<'claude' | 'codex' | 'custom'>('claude')
 
   useEffect(() => {
     if (!isOpen) {
       setProjectPath('')
       setName('')
       setCommand('')
+      setCommandMode('claude')
       return
     }
     // Priority: active session -> last used -> default
@@ -35,7 +43,17 @@ export default function NewSessionModal({
       activeProjectPath?.trim() || lastProjectPath || defaultProjectDir
     setProjectPath(basePath)
     setName('')
-    setCommand(defaultCommand)
+    // Determine initial command mode from default
+    if (defaultCommand === 'claude') {
+      setCommandMode('claude')
+      setCommand('')
+    } else if (defaultCommand === 'codex') {
+      setCommandMode('codex')
+      setCommand('')
+    } else {
+      setCommandMode('custom')
+      setCommand(defaultCommand)
+    }
   }, [activeProjectPath, defaultCommand, defaultProjectDir, isOpen, lastProjectPath])
 
   useEffect(() => {
@@ -79,11 +97,11 @@ export default function NewSessionModal({
     if (!resolvedPath) {
       return
     }
-    const trimmedCommand = command.trim()
+    const finalCommand = commandMode === 'custom' ? command.trim() : commandMode
     onCreate(
       resolvedPath,
       name.trim() || undefined,
-      trimmedCommand || undefined
+      finalCommand || undefined
     )
     onClose()
   }
@@ -145,12 +163,34 @@ export default function NewSessionModal({
             <label className="mb-1.5 block text-xs text-secondary">
               Command
             </label>
-            <input
-              value={command}
-              onChange={(event) => setCommand(event.target.value)}
-              placeholder={defaultCommand}
-              className="input font-mono"
-            />
+            <div className="flex gap-2">
+              {COMMAND_PRESETS.map((preset) => {
+                const mode = preset.value || 'custom'
+                const isActive = commandMode === mode
+                return (
+                  <button
+                    key={mode}
+                    type="button"
+                    onClick={() => {
+                      setCommandMode(mode as 'claude' | 'codex' | 'custom')
+                      if (mode !== 'custom') setCommand('')
+                    }}
+                    className={`btn flex-1 text-xs ${isActive ? 'btn-primary' : ''}`}
+                  >
+                    {preset.label}
+                  </button>
+                )
+              })}
+            </div>
+            {commandMode === 'custom' && (
+              <input
+                value={command}
+                onChange={(event) => setCommand(event.target.value)}
+                placeholder="Enter custom command..."
+                className="input mt-2 font-mono"
+                autoFocus
+              />
+            )}
           </div>
         </div>
 
