@@ -136,4 +136,45 @@ describe('TerminalProxy', () => {
     proxy.start()
     expect(() => proxy.resize(80, 24)).not.toThrow()
   })
+
+  test('flushes decoder tail on terminal exit', () => {
+    const received: string[] = []
+    let exitHandler: any = null
+    let dataHandler: any = null
+
+    const spawn = (_args: string[], options?: Parameters<typeof Bun.spawn>[1]) => {
+      const terminalOptions = (options?.terminal ?? {}) as Bun.TerminalOptions
+      dataHandler =
+        (terminalOptions.data as unknown as ((...args: any[]) => void)) ?? null
+      exitHandler =
+        (terminalOptions.exit as unknown as ((...args: any[]) => void)) ?? null
+      return {
+        terminal: {
+          write: () => {},
+          resize: () => {},
+          close: () => {},
+        },
+        exited: Promise.resolve(),
+        kill: () => {},
+      } as unknown as ReturnType<typeof Bun.spawn>
+    }
+
+    const proxy = new TerminalProxy(
+      'agentboard:4',
+      { onData: (data) => received.push(data) },
+      spawn
+    )
+
+    proxy.start()
+
+    const partial = new Uint8Array([0xf0, 0x9f])
+    if (dataHandler) {
+      dataHandler({} as Bun.Terminal, partial)
+    }
+    if (exitHandler) {
+      exitHandler({} as Bun.Terminal, 0, null)
+    }
+
+    expect(received).toEqual(['\uFFFD'])
+  })
 })
