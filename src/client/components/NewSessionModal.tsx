@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 interface NewSessionModalProps {
   isOpen: boolean
@@ -72,6 +72,8 @@ export default function NewSessionModal({
   const [name, setName] = useState('')
   const [command, setCommand] = useState('')
   const [commandMode, setCommandMode] = useState<CommandMode>('claude')
+  const formRef = useRef<HTMLFormElement>(null)
+  const previouslyFocusedRef = useRef<HTMLElement | null>(null)
 
   useEffect(() => {
     if (!isOpen) {
@@ -79,8 +81,13 @@ export default function NewSessionModal({
       setName('')
       setCommand('')
       setCommandMode('claude')
+      // Restore focus to previously focused element
+      previouslyFocusedRef.current?.focus()
+      previouslyFocusedRef.current = null
       return
     }
+    // Save currently focused element before modal takes focus
+    previouslyFocusedRef.current = document.activeElement as HTMLElement
     // Priority: active session -> last used -> default
     const basePath =
       activeProjectPath?.trim() || lastProjectPath || defaultProjectDir
@@ -94,8 +101,40 @@ export default function NewSessionModal({
   useEffect(() => {
     if (!isOpen) return
 
+    const getFocusableElements = () => {
+      if (!formRef.current) return []
+      // Only get elements that are actually tabbable (not tabindex="-1")
+      const selector =
+        'input:not([disabled]), button:not([disabled]):not([tabindex="-1"]), [tabindex="0"]'
+      return Array.from(formRef.current.querySelectorAll<HTMLElement>(selector))
+    }
+
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose()
+      if (e.key === 'Escape') {
+        onClose()
+        return
+      }
+
+      // Focus trap: manually handle all Tab navigation within the modal
+      if (e.key === 'Tab') {
+        e.preventDefault()
+        const focusableElements = getFocusableElements()
+        if (focusableElements.length === 0) return
+
+        const activeEl = document.activeElement as HTMLElement
+        const currentIndex = focusableElements.indexOf(activeEl)
+
+        let nextIndex: number
+        if (e.shiftKey) {
+          // Shift+Tab: go backwards
+          nextIndex = currentIndex <= 0 ? focusableElements.length - 1 : currentIndex - 1
+        } else {
+          // Tab: go forwards
+          nextIndex = currentIndex >= focusableElements.length - 1 ? 0 : currentIndex + 1
+        }
+
+        focusableElements[nextIndex]?.focus()
+      }
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
@@ -127,16 +166,20 @@ export default function NewSessionModal({
 
   return (
     <div
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="new-session-title"
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
       onClick={(e) => {
         if (e.target === e.currentTarget) onClose()
       }}
     >
       <form
+        ref={formRef}
         onSubmit={handleSubmit}
         className="w-full max-w-md border border-border bg-elevated p-6"
       >
-        <h2 className="text-sm font-semibold uppercase tracking-wider text-primary">
+        <h2 id="new-session-title" className="text-sm font-semibold uppercase tracking-wider text-primary">
           New Session
         </h2>
         <p className="mt-2 text-xs text-muted">
@@ -182,17 +225,40 @@ export default function NewSessionModal({
             <label className="mb-1.5 block text-xs text-secondary">
               Command
             </label>
-            <div className="flex gap-2">
-              {COMMAND_PRESETS.map((preset) => {
+            <div className="flex gap-2" role="radiogroup" aria-label="Command type">
+              {COMMAND_PRESETS.map((preset, index) => {
                 const mode = preset.value || 'custom'
                 const isActive = commandMode === mode
+                const modes = COMMAND_PRESETS.map((p) => p.value || 'custom')
                 return (
                   <button
                     key={mode}
                     type="button"
+                    role="radio"
+                    aria-checked={isActive}
+                    tabIndex={isActive ? 0 : -1}
                     onClick={() => {
-                      setCommandMode(mode as 'claude' | 'codex' | 'custom')
+                      setCommandMode(mode as CommandMode)
                       if (mode !== 'custom') setCommand('')
+                    }}
+                    onKeyDown={(e) => {
+                      let newIndex = index
+                      if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
+                        e.preventDefault()
+                        newIndex = (index + 1) % modes.length
+                      } else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+                        e.preventDefault()
+                        newIndex = (index - 1 + modes.length) % modes.length
+                      } else {
+                        return
+                      }
+                      const newMode = modes[newIndex] as CommandMode
+                      setCommandMode(newMode)
+                      if (newMode !== 'custom') setCommand('')
+                      // Focus the new button
+                      const container = e.currentTarget.parentElement
+                      const buttons = container?.querySelectorAll<HTMLButtonElement>('[role="radio"]')
+                      buttons?.[newIndex]?.focus()
                     }}
                     className={`btn flex-1 text-xs ${isActive ? 'btn-primary' : ''}`}
                   >
@@ -207,7 +273,6 @@ export default function NewSessionModal({
                 onChange={(event) => setCommand(event.target.value)}
                 placeholder="Enter custom command..."
                 className="input mt-2 font-mono"
-                autoFocus
               />
             )}
           </div>
