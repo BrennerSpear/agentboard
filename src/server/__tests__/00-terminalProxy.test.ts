@@ -111,4 +111,29 @@ describe('TerminalProxy', () => {
 
     expect(exitCount).toBe(1)
   })
+
+  test('resize ignores terminal resize errors', () => {
+    const terminal = {
+      write: (_data: string) => {},
+      resize: (_cols: number, _rows: number) => {
+        throw new Error('resize-failed')
+      },
+      close: () => {},
+    }
+    const spawn = (_args: string[], _options: Parameters<typeof Bun.spawn>[1]) =>
+      ({
+        terminal,
+        exited: Promise.resolve(),
+        kill: () => {},
+      }) as unknown as ReturnType<typeof Bun.spawn>
+
+    const proxy = new TerminalProxy(
+      'agentboard:3',
+      { onData: () => {} },
+      spawn
+    )
+
+    proxy.start()
+    expect(() => proxy.resize(80, 24)).not.toThrow()
+  })
 })

@@ -41,6 +41,8 @@ beforeEach(() => {
     defaultProjectDir: DEFAULT_PROJECT_DIR,
     defaultCommand: DEFAULT_COMMAND,
     lastProjectPath: null,
+    sessionSortMode: 'created',
+    sessionSortDirection: 'desc',
   })
 })
 
@@ -65,6 +67,15 @@ describe('useSettingsStore', () => {
   test('updates last project path', () => {
     useSettingsStore.getState().setLastProjectPath('/projects/app')
     expect(useSettingsStore.getState().lastProjectPath).toBe('/projects/app')
+  })
+
+  test('updates session sort preferences', () => {
+    useSettingsStore.getState().setSessionSortMode('status')
+    useSettingsStore.getState().setSessionSortDirection('asc')
+
+    const state = useSettingsStore.getState()
+    expect(state.sessionSortMode).toBe('status')
+    expect(state.sessionSortDirection).toBe('asc')
   })
 })
 

@@ -5,6 +5,12 @@ import path from 'node:path'
 import { config } from '../config'
 import { SessionManager } from '../SessionManager'
 
+const bunAny = Bun as typeof Bun & {
+  spawnSync: typeof Bun.spawnSync
+}
+
+const originalSpawnSync = bunAny.spawnSync
+
 interface WindowState {
   id: string
   index: number
@@ -275,5 +281,165 @@ describe('SessionManager', () => {
     const renameCall = runner.calls.find((call) => call[0] === 'rename-window')
     expect(renameCall).toBeTruthy()
     expect(renameCall?.[3]).toBe('new_name')
+  })
+
+  test('killWindow sends tmux command', () => {
+    const sessionName = 'agentboard-kill'
+    const runner = createTmuxRunner(
+      [
+        {
+          name: sessionName,
+          windows: [
+            {
+              id: '1',
+              index: 1,
+              name: 'alpha',
+              path: '/tmp/alpha',
+              activity: 0,
+              command: '',
+            },
+          ],
+        },
+      ],
+      1
+    )
+
+    const manager = new SessionManager(sessionName, {
+      runTmux: runner.runTmux,
+      capturePaneContent: () => '',
+    })
+
+    manager.killWindow(`${sessionName}:1`)
+    const killCall = runner.calls.find((call) => call[0] === 'kill-window')
+    expect(killCall).toEqual(['kill-window', '-t', `${sessionName}:1`])
+  })
+
+  test('listWindows uses default capturePaneContent on success', () => {
+    const sessionName = 'agentboard-default-capture'
+    const runner = createTmuxRunner(
+      [
+        {
+          name: sessionName,
+          windows: [
+            {
+              id: '1',
+              index: 1,
+              name: 'alpha',
+              path: '/tmp/alpha',
+              activity: 1700000000,
+              command: 'claude',
+            },
+          ],
+        },
+      ],
+      1
+    )
+
+    const originalPrefixes = config.discoverPrefixes
+    config.discoverPrefixes = []
+    bunAny.spawnSync = () =>
+      ({
+        exitCode: 0,
+        stdout: Buffer.from('content'),
+        stderr: Buffer.from(''),
+      }) as ReturnType<typeof Bun.spawnSync>
+
+    try {
+      const manager = new SessionManager(sessionName, {
+        runTmux: runner.runTmux,
+        now: () => 1700000000000,
+      })
+
+      const sessions = manager.listWindows()
+      expect(sessions[0]?.status).toBe('waiting')
+    } finally {
+      bunAny.spawnSync = originalSpawnSync
+      config.discoverPrefixes = originalPrefixes
+    }
+  })
+
+  test('listWindows returns unknown when capturePaneContent fails', () => {
+    const sessionName = 'agentboard-error-capture'
+    const runner = createTmuxRunner(
+      [
+        {
+          name: sessionName,
+          windows: [
+            {
+              id: '1',
+              index: 1,
+              name: 'alpha',
+              path: '/tmp/alpha',
+              activity: 1700000000,
+              command: 'claude',
+            },
+          ],
+        },
+      ],
+      1
+    )
+
+    const originalPrefixes = config.discoverPrefixes
+    config.discoverPrefixes = []
+    bunAny.spawnSync = () =>
+      ({
+        exitCode: 1,
+        stdout: Buffer.from(''),
+        stderr: Buffer.from('error'),
+      }) as ReturnType<typeof Bun.spawnSync>
+
+    try {
+      const manager = new SessionManager(sessionName, {
+        runTmux: runner.runTmux,
+        now: () => 1700000000000,
+      })
+
+      const sessions = manager.listWindows()
+      expect(sessions[0]?.status).toBe('unknown')
+    } finally {
+      bunAny.spawnSync = originalSpawnSync
+      config.discoverPrefixes = originalPrefixes
+    }
+  })
+
+  test('listWindows handles capturePaneContent exceptions', () => {
+    const sessionName = 'agentboard-throw-capture'
+    const runner = createTmuxRunner(
+      [
+        {
+          name: sessionName,
+          windows: [
+            {
+              id: '1',
+              index: 1,
+              name: 'alpha',
+              path: '/tmp/alpha',
+              activity: 1700000000,
+              command: 'claude',
+            },
+          ],
+        },
+      ],
+      1
+    )
+
+    const originalPrefixes = config.discoverPrefixes
+    config.discoverPrefixes = []
+    bunAny.spawnSync = () => {
+      throw new Error('boom')
+    }
+
+    try {
+      const manager = new SessionManager(sessionName, {
+        runTmux: runner.runTmux,
+        now: () => 1700000000000,
+      })
+
+      const sessions = manager.listWindows()
+      expect(sessions[0]?.status).toBe('unknown')
+    } finally {
+      bunAny.spawnSync = originalSpawnSync
+      config.discoverPrefixes = originalPrefixes
+    }
   })
 })

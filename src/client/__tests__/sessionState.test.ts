@@ -164,4 +164,40 @@ describe('useSessionStore', () => {
       .sessions.find((session) => session.id === 'first')
     expect(updated?.status).toBe('unknown')
   })
+
+  test('setSessions keeps null selection when none chosen', () => {
+    useSessionStore.setState({ selectedSessionId: null })
+    useSessionStore.getState().setSessions([makeSession({ id: 'only' })])
+
+    const state = useSessionStore.getState()
+    expect(state.selectedSessionId).toBeNull()
+    expect(state.hasLoaded).toBe(true)
+  })
+
+  test('setSelectedSessionId updates selection', () => {
+    useSessionStore.getState().setSelectedSessionId('session-1')
+    expect(useSessionStore.getState().selectedSessionId).toBe('session-1')
+  })
+
+  test('setConnectionStatus and error update state', () => {
+    useSessionStore.getState().setConnectionStatus('connected')
+    useSessionStore.getState().setConnectionError('boom')
+
+    const state = useSessionStore.getState()
+    expect(state.connectionStatus).toBe('connected')
+    expect(state.connectionError).toBe('boom')
+  })
+
+  test('updateSession ignores missing session ids', () => {
+    const sessions = [
+      makeSession({ id: 'first', status: 'waiting' }),
+    ]
+    useSessionStore.setState({ sessions })
+
+    useSessionStore
+      .getState()
+      .updateSession({ ...sessions[0], id: 'missing', status: 'unknown' })
+
+    expect(useSessionStore.getState().sessions).toEqual(sessions)
+  })
 })
