@@ -1,3 +1,5 @@
+console.log('DEBUG: TerminalProxy module loaded')
+
 interface TerminalCallbacks {
   onData: (data: string) => void
   onExit?: () => void
