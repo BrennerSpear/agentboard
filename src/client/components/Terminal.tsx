@@ -356,6 +356,11 @@ export default function Terminal({
         hasMoved = false
         lastTouchY.current = e.touches[0].clientY
         accumulatedDelta.current = 0
+
+        // Enable textarea on touch start so iOS long-press paste menu works
+        if (textarea) {
+          textarea.removeAttribute('disabled')
+        }
       }
     }
 
@@ -490,8 +495,8 @@ export default function Terminal({
             {/* New session button - mobile only (desktop has it in header) */}
             <button
               onClick={onNewSession}
-              className="flex h-7 w-7 items-center justify-center rounded bg-surface border border-border text-secondary hover:bg-hover hover:text-primary active:scale-95 transition-all md:hidden"
-              title="New session"
+              className="flex h-7 w-7 items-center justify-center rounded bg-accent text-white hover:bg-accent/90 active:scale-95 transition-all md:hidden"
+              title="New session (⌘⇧A)"
             >
               <PlusIcon width={16} height={16} />
             </button>
@@ -501,7 +506,7 @@ export default function Terminal({
               <button
                 onClick={() => setShowEndConfirm(true)}
                 className="flex h-7 w-7 items-center justify-center rounded bg-danger/10 border border-danger/30 text-danger hover:bg-danger/20 active:scale-95 transition-all"
-                title="End session"
+                title="End session (⌘⇧X)"
               >
                 <XCloseIcon width={16} height={16} />
               </button>

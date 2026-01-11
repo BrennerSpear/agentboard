@@ -32,7 +32,7 @@ export default function Header({
       <button
         onClick={onNewSession}
         className="flex h-7 w-7 items-center justify-center rounded bg-accent text-white hover:bg-accent/90 active:scale-95 transition-all"
-        title="New session"
+        title="New session (⌘⇧A)"
       >
         <PlusIcon width={16} height={16} />
       </button>

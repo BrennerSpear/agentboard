@@ -92,8 +92,8 @@ export default function App() {
 
       const key = event.key
 
-      // Cmd+Shift+Enter: New session
-      if (event.shiftKey && key === 'Enter') {
+      // Cmd+Shift+A: New session (Agent)
+      if (event.shiftKey && key.toLowerCase() === 'a') {
         event.preventDefault()
         if (!isModalOpen) {
           setIsModalOpen(true)
@@ -101,8 +101,8 @@ export default function App() {
         return
       }
 
-      // Cmd+Shift+K: Kill current session
-      if (event.shiftKey && key.toLowerCase() === 'k') {
+      // Cmd+Shift+X: Kill current session
+      if (event.shiftKey && key.toLowerCase() === 'x') {
         event.preventDefault()
         if (selectedSessionId && !isModalOpen) {
           handleKillSession(selectedSessionId)
