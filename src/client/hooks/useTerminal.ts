@@ -105,6 +105,10 @@ export function useTerminal({
   const onScrollChangeRef = useRef(onScrollChange)
   const useWebGLRef = useRef(useWebGL)
 
+  // Output buffering to reduce flicker - collect writes within a frame
+  const outputBufferRef = useRef<string>('')
+  const rafIdRef = useRef<number | null>(null)
+
   useEffect(() => {
     sendMessageRef.current = sendMessage
   }, [sendMessage])
@@ -507,26 +511,47 @@ export function useTerminal({
     }
   }, [sessionId, sendMessage, checkScrollPosition])
 
-  // Subscribe to terminal output
+  // Subscribe to terminal output with frame-based buffering to reduce flicker
   useEffect(() => {
-    const unsubscribe = subscribe((message) => {
+    const flushBuffer = () => {
       const terminal = terminalRef.current
+      if (terminal && outputBufferRef.current) {
+        terminal.write(outputBufferRef.current)
+        outputBufferRef.current = ''
+        checkScrollPosition()
+      }
+      rafIdRef.current = null
+    }
+
+    const unsubscribe = subscribe((message) => {
       const attachedSession = attachedSessionRef.current
 
       if (
         message.type === 'terminal-output' &&
-        terminal &&
         attachedSession &&
         message.sessionId === attachedSession
       ) {
-        // Force text presentation for characters iOS renders as emoji
-        terminal.write(forceTextPresentation(message.data))
-        // Update scroll position after write
-        checkScrollPosition()
+        // Buffer output and schedule flush on next frame
+        outputBufferRef.current += forceTextPresentation(message.data)
+        if (rafIdRef.current === null) {
+          rafIdRef.current = requestAnimationFrame(flushBuffer)
+        }
       }
     })
 
-    return unsubscribe
+    return () => {
+      unsubscribe()
+      // Flush any remaining buffer on cleanup
+      if (rafIdRef.current !== null) {
+        cancelAnimationFrame(rafIdRef.current)
+        rafIdRef.current = null
+      }
+      const terminal = terminalRef.current
+      if (terminal && outputBufferRef.current) {
+        terminal.write(outputBufferRef.current)
+        outputBufferRef.current = ''
+      }
+    }
   }, [subscribe, checkScrollPosition])
 
   // Handle resize - with longer debounce to prevent flickering

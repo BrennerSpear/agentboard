@@ -202,6 +202,13 @@ beforeEach(() => {
     devicePixelRatio: 1,
   } as unknown as Window & typeof globalThis
 
+  // Mock requestAnimationFrame to execute callback synchronously
+  globalAny.requestAnimationFrame = (callback: FrameRequestCallback) => {
+    callback(0)
+    return 1
+  }
+  globalAny.cancelAnimationFrame = () => {}
+
   globalAny.document = {
     fonts: { ready: Promise.resolve() },
   } as unknown as Document
