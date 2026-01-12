@@ -19,6 +19,7 @@
     "prepare": "git config core.hooksPath .githooks"
   },
   "dependencies": {
+    "@base-ui-components/react": "^1.0.0-rc.0",
     "@untitledui-icons/react": "^1.0.3",
     "@xterm/addon-clipboard": "^0.2.0",
     "clsx": "^2.1.1",

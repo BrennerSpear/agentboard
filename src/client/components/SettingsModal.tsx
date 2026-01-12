@@ -6,10 +6,15 @@ import {
   type SessionSortDirection,
   type SessionSortMode,
 } from '../stores/settingsStore'
+import { Switch } from './Switch'
+
+interface SettingsChangeFlags {
+  webglChanged: boolean
+}
 
 interface SettingsModalProps {
   isOpen: boolean
-  onClose: () => void
+  onClose: (flags?: SettingsChangeFlags) => void
 }
 
 export default function SettingsModal({
@@ -32,6 +37,8 @@ export default function SettingsModal({
   const setSessionSortDirection = useSettingsStore(
     (state) => state.setSessionSortDirection
   )
+  const useWebGL = useSettingsStore((state) => state.useWebGL)
+  const setUseWebGL = useSettingsStore((state) => state.setUseWebGL)
 
   const [draftDir, setDraftDir] = useState(defaultProjectDir)
   const [draftCommand, setDraftCommand] = useState(defaultCommand)
@@ -39,6 +46,7 @@ export default function SettingsModal({
     useState<SessionSortMode>(sessionSortMode)
   const [draftSortDirection, setDraftSortDirection] =
     useState<SessionSortDirection>(sessionSortDirection)
+  const [draftUseWebGL, setDraftUseWebGL] = useState(useWebGL)
 
   useEffect(() => {
     if (isOpen) {
@@ -46,12 +54,14 @@ export default function SettingsModal({
       setDraftCommand(defaultCommand)
       setDraftSortMode(sessionSortMode)
       setDraftSortDirection(sessionSortDirection)
+      setDraftUseWebGL(useWebGL)
     }
   }, [
     defaultCommand,
     defaultProjectDir,
     sessionSortMode,
     sessionSortDirection,
+    useWebGL,
     isOpen,
   ])
 
@@ -63,11 +73,13 @@ export default function SettingsModal({
     event.preventDefault()
     const trimmedDir = draftDir.trim()
     const trimmedCommand = draftCommand.trim()
+    const webglChanged = draftUseWebGL !== useWebGL
     setDefaultProjectDir(trimmedDir || DEFAULT_PROJECT_DIR)
     setDefaultCommand(trimmedCommand || DEFAULT_COMMAND)
     setSessionSortMode(draftSortMode)
     setSessionSortDirection(draftSortDirection)
-    onClose()
+    setUseWebGL(draftUseWebGL)
+    onClose({ webglChanged })
   }
 
   return (
@@ -164,10 +176,33 @@ export default function SettingsModal({
               </div>
             </div>
           )}
+
+          <div className="border-t border-border pt-4">
+            <label className="mb-2 block text-xs text-secondary">
+              Terminal Rendering
+            </label>
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="text-sm text-primary">WebGL Acceleration</div>
+                <div className="text-[10px] text-muted">
+                  GPU rendering for better performance. Disable if you see flickering.
+                </div>
+              </div>
+              <Switch
+                checked={draftUseWebGL}
+                onCheckedChange={setDraftUseWebGL}
+              />
+            </div>
+            {draftUseWebGL !== useWebGL && (
+              <p className="mt-2 text-[10px] text-approval">
+                Terminal will reload when saved
+              </p>
+            )}
+          </div>
         </div>
 
         <div className="mt-6 flex justify-end gap-2">
-          <button type="button" onClick={onClose} className="btn">
+          <button type="button" onClick={() => onClose()} className="btn">
             Cancel
           </button>
           <button type="submit" className="btn btn-primary">

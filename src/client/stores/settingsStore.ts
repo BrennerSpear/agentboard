@@ -19,6 +19,8 @@ interface SettingsState {
   setSessionSortMode: (mode: SessionSortMode) => void
   sessionSortDirection: SessionSortDirection
   setSessionSortDirection: (direction: SessionSortDirection) => void
+  useWebGL: boolean
+  setUseWebGL: (enabled: boolean) => void
 }
 
 export const useSettingsStore = create<SettingsState>()(
@@ -35,6 +37,8 @@ export const useSettingsStore = create<SettingsState>()(
       sessionSortDirection: 'desc',
       setSessionSortDirection: (direction) =>
         set({ sessionSortDirection: direction }),
+      useWebGL: true,
+      setUseWebGL: (enabled) => set({ useWebGL: enabled }),
     }),
     {
       name: 'agentboard-settings',

@@ -173,9 +173,10 @@ function TerminalHarness(props: {
   subscribe: (listener: (message: ServerMessage) => void) => () => void
   theme: ITheme
   fontSize: number
+  useWebGL?: boolean
   onScrollChange?: (isAtBottom: boolean) => void
 }) {
-  const { containerRef } = useTerminal(props)
+  const { containerRef } = useTerminal({ ...props, useWebGL: props.useWebGL ?? true })
   return <div ref={containerRef} />
 }
 

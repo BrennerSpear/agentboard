@@ -3,6 +3,7 @@ import type { Session } from '@shared/types'
 import type { ConnectionStatus } from '../stores/sessionStore'
 import { useTerminal } from '../hooks/useTerminal'
 import { useThemeStore, terminalThemes } from '../stores/themeStore'
+import { useSettingsStore } from '../stores/settingsStore'
 import { isIOSDevice, getNavShortcutMod } from '../utils/device'
 import TerminalControls from './TerminalControls'
 import { PlusIcon, XCloseIcon, DotsVerticalIcon } from '@untitledui-icons/react/line'
@@ -71,6 +72,7 @@ export default function Terminal({
   const theme = useThemeStore((state) => state.theme)
   const toggleTheme = useThemeStore((state) => state.toggleTheme)
   const terminalTheme = terminalThemes[theme]
+  const useWebGL = useSettingsStore((state) => state.useWebGL)
   const isiOS = isIOSDevice()
   const [showScrollButton, setShowScrollButton] = useState(false)
   const [isSelectingText, setIsSelectingText] = useState(false)
@@ -102,6 +104,7 @@ export default function Terminal({
     subscribe,
     theme: terminalTheme,
     fontSize,
+    useWebGL,
     onScrollChange: (isAtBottom) => {
       setShowScrollButton(!isAtBottom)
     },

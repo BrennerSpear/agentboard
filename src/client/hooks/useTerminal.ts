@@ -37,6 +37,7 @@ interface UseTerminalOptions {
   subscribe: (listener: (message: ServerMessage) => void) => () => void
   theme: ITheme
   fontSize: number
+  useWebGL: boolean
   onScrollChange?: (isAtBottom: boolean) => void
 }
 
@@ -46,6 +47,7 @@ export function useTerminal({
   subscribe,
   theme,
   fontSize,
+  useWebGL,
   onScrollChange,
 }: UseTerminalOptions) {
   const isiOS = isIOSDevice()
@@ -61,6 +63,7 @@ export function useTerminal({
   const attachedSessionRef = useRef<string | null>(null)
   const sendMessageRef = useRef(sendMessage)
   const onScrollChangeRef = useRef(onScrollChange)
+  const useWebGLRef = useRef(useWebGL)
 
   useEffect(() => {
     sendMessageRef.current = sendMessage
@@ -130,12 +133,14 @@ export function useTerminal({
     terminal.loadAddon(fitAddon)
     terminal.loadAddon(new ClipboardAddon())
 
-    try {
-      const webglAddon = new WebglAddon()
-      terminal.loadAddon(webglAddon)
-      webglAddonRef.current = webglAddon
-    } catch {
-      // WebGL addon is optional
+    if (useWebGLRef.current) {
+      try {
+        const webglAddon = new WebglAddon()
+        terminal.loadAddon(webglAddon)
+        webglAddonRef.current = webglAddon
+      } catch {
+        // WebGL addon is optional
+      }
     }
 
     terminal.open(container)
@@ -269,6 +274,41 @@ export function useTerminal({
       }
     }
   }, [fontSize])
+
+  // Handle WebGL toggle at runtime
+  useEffect(() => {
+    const terminal = terminalRef.current
+    if (!terminal) return
+
+    const wasEnabled = useWebGLRef.current
+    useWebGLRef.current = useWebGL
+
+    // Skip on first render (initialization handles it)
+    if (wasEnabled === useWebGL) return
+
+    if (useWebGL) {
+      // Enable WebGL
+      if (!webglAddonRef.current) {
+        try {
+          const webglAddon = new WebglAddon()
+          terminal.loadAddon(webglAddon)
+          webglAddonRef.current = webglAddon
+        } catch {
+          // WebGL addon is optional
+        }
+      }
+    } else {
+      // Disable WebGL - dispose addon to fall back to canvas
+      if (webglAddonRef.current) {
+        try {
+          webglAddonRef.current.dispose()
+        } catch {
+          // Ignore disposal errors
+        }
+        webglAddonRef.current = null
+      }
+    }
+  }, [useWebGL])
 
   // Handle session changes - attach/detach
   useEffect(() => {
