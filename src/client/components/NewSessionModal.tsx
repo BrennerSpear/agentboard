@@ -117,6 +117,13 @@ export default function NewSessionModal({
         return
       }
 
+      // Enter key submits form from anywhere (except input fields which handle it natively)
+      if (e.key === 'Enter' && document.activeElement?.tagName !== 'INPUT') {
+        e.preventDefault()
+        formRef.current?.requestSubmit()
+        return
+      }
+
       // Focus trap: manually handle all Tab navigation within the modal
       if (e.key === 'Tab') {
         e.preventDefault()
