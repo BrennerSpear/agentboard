@@ -401,6 +401,21 @@ interface StatusResult {
   lastChanged: number
 }
 
+// Patterns that indicate the agent is actively working (thinking/processing)
+const ACTIVE_WORKING_PATTERNS: RegExp[] = [
+  // Codex: "(19s • esc to interrupt)" timer pattern
+  /esc to interrupt/i,
+  // Claude Code: "✳ Lollygagging… (ctrl+c to interrupt)" spinner pattern
+  /ctrl\+c to interrupt/i,
+]
+
+// Detects if terminal content shows active working indicators
+function detectsActiveWorking(content: string): boolean {
+  const cleaned = stripAnsi(content)
+  // Check entire content - status bars can be anywhere (top or bottom)
+  return ACTIVE_WORKING_PATTERNS.some((pattern) => pattern.test(cleaned))
+}
+
 function inferStatus(
   tmuxWindow: string,
   capture: CapturePane = capturePaneWithDimensions,
@@ -418,6 +433,10 @@ function inferStatus(
     const cached = paneContentCache.get(tmuxWindow)
     return { status: 'permission', lastChanged: cached?.lastChanged ?? now() }
   }
+
+  // Check for active working indicators (timer with "esc to interrupt")
+  // This catches cases where the only visible change is the timer incrementing
+  const isActivelyWorking = detectsActiveWorking(content)
 
   const cached = paneContentCache.get(tmuxWindow)
   let contentChanged = false
@@ -445,8 +464,8 @@ function inferStatus(
     return { status: 'waiting', lastChanged }
   }
 
-  // If content changed, it's working
-  return { status: contentChanged ? 'working' : 'waiting', lastChanged }
+  // If content changed OR active working indicator detected, it's working
+  return { status: contentChanged || isActivelyWorking ? 'working' : 'waiting', lastChanged }
 }
 
 // Box-drawing and decorative characters (borders, lines, spacers)
@@ -567,14 +586,40 @@ function inferAgentType(command: string): AgentType | undefined {
     return undefined
   }
 
-  const normalized = command.toLowerCase()
+  // Extract the base command name, handling:
+  // - Full paths: /usr/local/bin/claude -> claude
+  // - Package runners: npx codex, bunx claude -> codex, claude
+  // - Flags: claude --help, codex --search -> claude, codex
+  // - Quoted commands: "codex --search" -> codex
+  const normalized = command.toLowerCase().trim().replace(/^["']|["']$/g, '')
+  const parts = normalized.split(/\s+/)
 
-  if (normalized === 'claude' || normalized.startsWith('claude ')) {
-    return 'claude'
-  }
+  for (const part of parts) {
+    // Skip common package runners/prefixes
+    if (['npx', 'bunx', 'pnpm', 'yarn', 'env'].includes(part)) {
+      continue
+    }
+    // Skip environment variable assignments (KEY=value)
+    if (part.includes('=')) {
+      continue
+    }
+    // Skip flags
+    if (part.startsWith('-')) {
+      continue
+    }
 
-  if (normalized === 'codex' || normalized.startsWith('codex ')) {
-    return 'codex'
+    // Extract base name from path
+    const baseName = part.split('/').pop() || part
+
+    if (baseName === 'claude') {
+      return 'claude'
+    }
+    if (baseName === 'codex') {
+      return 'codex'
+    }
+
+    // Found a non-skippable command that isn't a known agent
+    break
   }
 
   return undefined

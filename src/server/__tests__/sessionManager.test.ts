@@ -848,4 +848,50 @@ describe('SessionManager', () => {
       config.discoverPrefixes = originalPrefixes
     }
   })
+
+  test('listWindows detects agent type from commands with flags', () => {
+    const sessionName = 'agentboard-agent-type'
+    const runner = createTmuxRunner(
+      [
+        {
+          name: sessionName,
+          windows: [
+            { id: '1', index: 1, name: 'a', path: '/tmp', activity: 0, command: 'codex --search' },
+            { id: '2', index: 2, name: 'b', path: '/tmp', activity: 0, command: 'claude --help' },
+            { id: '3', index: 3, name: 'c', path: '/tmp', activity: 0, command: '/usr/local/bin/codex' },
+            { id: '4', index: 4, name: 'd', path: '/tmp', activity: 0, command: 'npx codex' },
+            { id: '5', index: 5, name: 'e', path: '/tmp', activity: 0, command: 'ENV_VAR=1 claude' },
+            { id: '6', index: 6, name: 'f', path: '/tmp', activity: 0, command: 'bash' },
+            { id: '7', index: 7, name: 'g', path: '/tmp', activity: 0, command: '"codex --search"' },
+            { id: '8', index: 8, name: 'h', path: '/tmp', activity: 0, command: "'claude --dangerously-skip-permissions'" },
+          ],
+        },
+      ],
+      1
+    )
+
+    const manager = new SessionManager(sessionName, {
+      runTmux: runner.runTmux,
+      capturePaneContent: () => makePaneCapture(''),
+      now: () => 1700000000000,
+    })
+
+    const originalPrefixes = config.discoverPrefixes
+    config.discoverPrefixes = []
+    try {
+      const sessions = manager.listWindows()
+      const byName = (name: string) => sessions.find((s) => s.name === name)
+
+      expect(byName('a')?.agentType).toBe('codex')
+      expect(byName('b')?.agentType).toBe('claude')
+      expect(byName('c')?.agentType).toBe('codex')
+      expect(byName('d')?.agentType).toBe('codex')
+      expect(byName('e')?.agentType).toBe('claude')
+      expect(byName('f')?.agentType).toBeUndefined()
+      expect(byName('g')?.agentType).toBe('codex')
+      expect(byName('h')?.agentType).toBe('claude')
+    } finally {
+      config.discoverPrefixes = originalPrefixes
+    }
+  })
 })
