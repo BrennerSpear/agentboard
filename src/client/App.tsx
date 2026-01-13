@@ -126,6 +126,14 @@ export default function App() {
     [sessions, sessionSortMode, sessionSortDirection]
   )
 
+  // Auto-select first session on mobile when sessions load
+  useEffect(() => {
+    const isMobile = window.matchMedia('(max-width: 767px)').matches
+    if (isMobile && hasLoaded && selectedSessionId === null && sortedSessions.length > 0) {
+      setSelectedSessionId(sortedSessions[0].id)
+    }
+  }, [hasLoaded, selectedSessionId, sortedSessions, setSelectedSessionId])
+
   const handleKillSession = useCallback((sessionId: string) => {
     sendMessage({ type: 'session-kill', sessionId })
   }, [sendMessage])

@@ -465,8 +465,27 @@ function handleMessage(
           ?.resize(message.cols, message.rows)
       }
       return
+    case 'tmux-cancel-copy-mode':
+      // Exit tmux copy-mode when user starts typing after scrolling
+      handleCancelCopyMode(message.sessionId)
+      return
     default:
       send(ws, { type: 'error', message: 'Unknown message type' })
+  }
+}
+
+function handleCancelCopyMode(sessionId: string) {
+  const session = registry.get(sessionId)
+  if (!session) return
+
+  try {
+    // Exit tmux copy-mode quietly.
+    Bun.spawnSync(['tmux', 'send-keys', '-X', '-t', session.tmuxWindow, 'cancel'], {
+      stdout: 'pipe',
+      stderr: 'pipe',
+    })
+  } catch {
+    // Ignore errors - copy-mode may not be active
   }
 }
 
@@ -649,14 +668,42 @@ async function attachTerminalPersistent(
     terminal.resize(cols, rows)
   }
 
+  // Capture scrollback history BEFORE switching to avoid race with live output
+  const history = captureTmuxHistory(target)
+
   try {
     await terminal.switchTo(target, () => {
       ws.data.currentSessionId = sessionId
+      // Send history in onReady callback, before output suppression is lifted
+      if (history) {
+        send(ws, { type: 'terminal-output', sessionId, data: history })
+      }
     })
     ws.data.currentSessionId = sessionId
     send(ws, { type: 'terminal-ready', sessionId })
   } catch (error) {
     handleTerminalError(ws, sessionId, error, 'ERR_TMUX_SWITCH_FAILED')
+  }
+}
+
+function captureTmuxHistory(target: string): string | null {
+  try {
+    // Capture full scrollback history (-S - means from start, -E - means to end, -J joins wrapped lines)
+    const result = Bun.spawnSync(
+      ['tmux', 'capture-pane', '-t', target, '-p', '-S', '-', '-E', '-', '-J'],
+      { stdout: 'pipe', stderr: 'pipe' }
+    )
+    if (result.exitCode !== 0) {
+      return null
+    }
+    const output = result.stdout.toString()
+    // Only return if there's actual content
+    if (output.trim().length === 0) {
+      return null
+    }
+    return output
+  } catch {
+    return null
   }
 }
 
@@ -688,6 +735,7 @@ function handleTerminalResizePersistent(
   }
   ws.data.terminal?.resize(cols, rows)
 }
+
 
 function sendTerminalError(
   ws: ServerWebSocket<WSData>,

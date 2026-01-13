@@ -49,6 +49,10 @@ class TerminalMock {
     return true
   }
 
+  attachCustomWheelEventHandler() {
+    return true
+  }
+
   write() {}
 
   scrollToBottom() {
@@ -226,13 +230,14 @@ describe('Terminal', () => {
     const { createNodeMock } = createContainerMock()
     let renderer!: TestRenderer.ReactTestRenderer
 
+    const sentMessages: unknown[] = []
     act(() => {
       renderer = TestRenderer.create(
         <Terminal
           session={baseSession}
           sessions={[baseSession]}
           connectionStatus="connected"
-          sendMessage={() => {}}
+          sendMessage={(msg) => { sentMessages.push(msg) }}
           subscribe={() => () => {}}
           onClose={() => {}}
           onSelectSession={() => {}}
@@ -268,13 +273,18 @@ describe('Terminal', () => {
       throw new Error('Expected scroll button')
     }
 
-    const initialScrolls = terminalInstance.scrollCalls
+    const initialMessageCount = sentMessages.length
 
     act(() => {
       scrollButton.props.onClick()
     })
 
-    expect(terminalInstance.scrollCalls).toBe(initialScrolls + 1)
+    // Scroll to bottom now sends tmux-cancel-copy-mode to exit copy-mode
+    expect(sentMessages.length).toBe(initialMessageCount + 1)
+    expect(sentMessages[sentMessages.length - 1]).toEqual({
+      type: 'tmux-cancel-copy-mode',
+      sessionId: baseSession.id,
+    })
 
     const moreButton = renderer.root.findByProps({ title: 'More options' })
 

@@ -59,6 +59,10 @@ class TerminalMock {
     return true
   }
 
+  attachCustomWheelEventHandler(_handler: (event: WheelEvent) => boolean) {
+    return true
+  }
+
   write(data: string) {
     this.writes.push(data)
   }

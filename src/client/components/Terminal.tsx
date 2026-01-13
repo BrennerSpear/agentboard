@@ -93,6 +93,7 @@ export default function Terminal({
   const [isDrawerOpen, setIsDrawerOpen] = useState(false)
   const [isRenaming, setIsRenaming] = useState(false)
   const [renameValue, setRenameValue] = useState('')
+  const isEdgeSwipingRef = useRef(false)
   const moreMenuRef = useRef<HTMLDivElement>(null)
   const renameInputRef = useRef<HTMLInputElement>(null)
   const endSessionButtonRef = useRef<HTMLButtonElement>(null)
@@ -100,8 +101,6 @@ export default function Terminal({
     const saved = localStorage.getItem('terminal-font-size')
     return saved ? parseInt(saved, 10) : 13
   })
-  const lastTouchY = useRef<number | null>(null)
-  const accumulatedDelta = useRef<number>(0)
 
   const adjustFontSize = useCallback((delta: number) => {
     setFontSize((prev) => {
@@ -111,7 +110,7 @@ export default function Terminal({
     })
   }, [])
 
-  const { containerRef, terminalRef } = useTerminal({
+  const { containerRef, terminalRef, inTmuxCopyModeRef, setTmuxCopyMode } = useTerminal({
     sessionId: session?.id ?? null,
     tmuxTarget: session?.tmuxWindow ?? null,
     sendMessage,
@@ -125,8 +124,12 @@ export default function Terminal({
   })
 
   const scrollToBottom = useCallback(() => {
+    // Exit tmux copy-mode to return to live output (oracle recommendation)
+    if (!session) return
+    sendMessage({ type: 'tmux-cancel-copy-mode', sessionId: session.id })
+    setTmuxCopyMode(false)
     terminalRef.current?.scrollToBottom()
-  }, [terminalRef])
+  }, [session, sendMessage, setTmuxCopyMode, terminalRef])
 
   useEffect(() => {
     if (typeof window === 'undefined' || !window.matchMedia) return
@@ -167,12 +170,16 @@ export default function Terminal({
         touchStartX = touch.clientX
         touchStartY = touch.clientY
         isEdgeSwipe = true
+        isEdgeSwipingRef.current = true
       } else {
         isEdgeSwipe = false
       }
     }
 
     const handleTouchEnd = (e: TouchEvent) => {
+      // Always clear the edge swiping ref on touch end
+      isEdgeSwipingRef.current = false
+
       if (!isEdgeSwipe || isDrawerOpen) return
 
       const touch = e.changedTouches[0]
@@ -285,18 +292,27 @@ export default function Terminal({
       setIsSelectingText((prev) => prev !== newValue ? newValue : prev)
     }
 
+    // Hard-clear iOS selection by toggling -webkit-user-select to force repaint
+    const clearIOSSelection = () => {
+      const sel = window.getSelection()
+      try { sel?.removeAllRanges() } catch {}
+
+      // Force WebKit repaint of selection painting on the a11y tree
+      const a11yTree = container.querySelector('.xterm-accessibility-tree') as HTMLElement | null
+      if (a11yTree) {
+        a11yTree.style.setProperty('-webkit-user-select', 'none')
+        void a11yTree.offsetHeight // Force reflow
+        a11yTree.style.setProperty('-webkit-user-select', 'text')
+      }
+      setIsSelectingText(false)
+    }
+
     const onCopy = () => {
       const sel = window.getSelection()
       if (!sel || sel.isCollapsed) return
       if (!isSelectionInside(sel)) return
 
-      setTimeout(() => {
-        try {
-          sel.removeAllRanges()
-        } catch {
-          // Ignore selection cleanup errors
-        }
-      }, 0)
+      setTimeout(clearIOSSelection, 0)
     }
 
     const onTouchEnd = (event: TouchEvent) => {
@@ -327,14 +343,7 @@ export default function Terminal({
       }
 
       if (!targetInTree || !targetInSelection) {
-        setTimeout(() => {
-          try {
-            sel.removeAllRanges()
-          } catch {
-            // Ignore selection cleanup errors
-          }
-          setIsSelectingText(false)
-        }, 0)
+        setTimeout(clearIOSSelection, 0)
       }
     }
 
@@ -355,33 +364,69 @@ export default function Terminal({
     const container = containerRef.current
     if (!container) return
 
-    const updateA11yMetrics = () => {
-      const row = container.querySelector('.xterm-accessibility-tree > div') as HTMLElement | null
-      if (row) {
-        const rowHeight = row.getBoundingClientRect().height
-        if (rowHeight) {
-          container.style.setProperty('--xterm-cell-height', `${rowHeight}px`)
-          container.style.setProperty('--xterm-a11y-offset', `${Math.round(rowHeight / 2)}px`)
-        }
-      }
+    const syncA11yOverlay = () => {
+      const terminal = terminalRef.current
+      const root = container.querySelector('.xterm') as HTMLElement | null
+      if (!terminal || !root) return
 
-      const xterm = container.querySelector('.xterm') as HTMLElement | null
-      const computedFontSize = xterm ? window.getComputedStyle(xterm).fontSize : `${fontSize}px`
-      if (computedFontSize) {
-        container.style.setProperty('--xterm-font-size', computedFontSize)
-      }
+      const screen = root.querySelector('.xterm-screen') as HTMLElement | null
+      const a11yRoot = root.querySelector('.xterm-accessibility') as HTMLElement | null
+      const a11yTree = root.querySelector('.xterm-accessibility-tree') as HTMLElement | null
+      if (!screen || !a11yRoot || !a11yTree) return
+
+      // 1) Position a11y overlay to match the screen rect (handles padding without transforms)
+      const rootRect = root.getBoundingClientRect()
+      const screenRect = screen.getBoundingClientRect()
+
+      const left = screenRect.left - rootRect.left
+      const top = screenRect.top - rootRect.top
+
+      Object.assign(a11yRoot.style, {
+        left: `${left}px`,
+        top: `${top}px`,
+        right: 'auto',
+        bottom: 'auto',
+        width: `${screenRect.width}px`,
+        height: `${screenRect.height}px`,
+      })
+
+      // 2) Compute canvas grid cell size
+      const cellW = screenRect.width / terminal.cols
+      const cellH = screenRect.height / terminal.rows
+
+      // 3) Measure DOM character width inside the a11y tree context
+      const probe = document.createElement('span')
+      probe.textContent = '0'.repeat(200)
+      probe.style.cssText = 'position:absolute;visibility:hidden;white-space:pre;pointer-events:none;letter-spacing:0px'
+      a11yTree.appendChild(probe)
+      const domCharW = probe.getBoundingClientRect().width / 200
+      probe.remove()
+
+      // 4) Compute letter-spacing so DOM advances match the canvas grid
+      const letterSpacing = Math.max(-2, Math.min(2, cellW - domCharW))
+
+      container.style.setProperty('--xterm-font-size', `${terminal.options.fontSize}px`)
+      container.style.setProperty('--xterm-cell-height', `${cellH}px`)
+      container.style.setProperty('--xterm-a11y-letter-spacing', `${letterSpacing}px`)
     }
 
-    updateA11yMetrics()
-    const rafId = window.requestAnimationFrame(updateA11yMetrics)
-    const retryId = window.setTimeout(updateA11yMetrics, 100)
+    syncA11yOverlay()
+    const rafId = window.requestAnimationFrame(syncA11yOverlay)
+    const retryId = window.setTimeout(syncA11yOverlay, 100)
+
+    // Re-sync on resize/orientation changes
+    const scheduleSync = () => window.requestAnimationFrame(syncA11yOverlay)
+    window.visualViewport?.addEventListener('resize', scheduleSync)
+    window.addEventListener('orientationchange', scheduleSync)
 
     return () => {
       window.cancelAnimationFrame(rafId)
       window.clearTimeout(retryId)
+      window.visualViewport?.removeEventListener('resize', scheduleSync)
+      window.removeEventListener('orientationchange', scheduleSync)
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps -- use session?.id to avoid re-running on session data changes
-  }, [containerRef, fontSize, isiOS, session?.id])
+  }, [containerRef, fontSize, isiOS, session?.id, terminalRef])
 
   // Track isSelectingText in a ref to avoid re-running effect
   const isSelectingTextRef = useRef(isSelectingText)
@@ -401,6 +446,9 @@ export default function Terminal({
     sendMessageRef.current = sendMessage
   }, [sendMessage])
 
+  // Flag to swallow next mouse event (after iOS selection dismissal)
+  const swallowNextMouseRef = useRef(false)
+
   // Touch scroll with native long-press selection
   // Single tap focuses terminal for keyboard input
   useEffect(() => {
@@ -409,29 +457,102 @@ export default function Terminal({
 
     // Check if mobile
     if (!isMobileLayout) return
-    const TAP_MOVE_THRESHOLD = 10 // pixels - if moved more, it's not a tap
+    const TAP_MOVE_THRESHOLD = 6 // pixels - allows small jitter without canceling taps
+    const LONG_PRESS_MS = 350
 
     let touchStartPos = { x: 0, y: 0 }
+    let touchStartTime = 0
     let hasMoved = false
+    let lastTouchY: number | null = null
+    let lastTouchTime = 0
+    let velocity = 0
+    let accumulatedDelta = 0
+    let lineHeightPx = Math.round(fontSize * 1.4)
+    let momentumAnimationId: number | null = null
 
-    // Get textarea and keep it disabled to prevent auto-focus
-    const textarea = container.querySelector('.xterm-helper-textarea') as HTMLTextAreaElement | null
-    if (textarea) {
-      textarea.setAttribute('disabled', 'true')
+    const resolveLineHeight = () => {
+      const computed = window.getComputedStyle(container)
+      const cssValue = computed.getPropertyValue('--xterm-cell-height').trim()
+      const parsed = Number.parseFloat(cssValue)
+      if (!Number.isNaN(parsed) && parsed > 0) {
+        return parsed
+      }
+      return Math.round(fontSize * 1.4)
     }
 
-    const focusTerminalInput = () => {
-      // Enable and focus - don't re-disable on blur to prevent keyboard dismissal
-      // The textarea will be re-disabled when session changes (effect cleanup)
-      if (textarea) {
-        textarea.removeAttribute('disabled')
-        textarea.focus()
+    const getTextarea = () =>
+      container.querySelector('.xterm-helper-textarea') as HTMLTextAreaElement | null
+
+    const disableTextareaIfIdle = () => {
+      const current = getTextarea()
+      if (!current) return
+      if (document.activeElement !== current) {
+        current.disabled = true
       }
     }
 
+    const enableTextarea = () => {
+      const current = getTextarea()
+      if (!current) return
+      current.disabled = false
+    }
+
+    // Keep textarea disabled to prevent auto-focus, but don't break active input sessions.
+    disableTextareaIfIdle()
+
+    const focusTerminalInput = () => {
+      // Don't focus if in tmux copy-mode (scrolled back) - user should use scroll-to-bottom button
+      if (inTmuxCopyModeRef.current) {
+        return
+      }
+
+      // Enable and focus - don't re-disable on blur to prevent keyboard dismissal
+      // The textarea will be re-disabled when session changes (effect cleanup)
+      const current = getTextarea()
+      if (!current) return
+      current.disabled = false
+      current.focus()
+    }
+
+    const stopMomentum = () => {
+      if (momentumAnimationId !== null) {
+        cancelAnimationFrame(momentumAnimationId)
+        momentumAnimationId = null
+      }
+      velocity = 0
+    }
+
+    // Send scroll events to tmux as SGR mouse sequences (like desktop wheel handler)
+    const sendScrollToTmux = (lines: number) => {
+      const currentSessionId = sessionIdRef.current
+      if (!currentSessionId || lines === 0) return
+
+      const terminal = terminalRef.current
+      const cols = terminal?.cols ?? 80
+      const rows = terminal?.rows ?? 24
+      const col = Math.floor(cols / 2)
+      const row = Math.floor(rows / 2)
+
+      // SGR mouse wheel: button 64 = scroll up, 65 = scroll down
+      const button = lines > 0 ? 65 : 64
+      const count = Math.abs(lines)
+
+      for (let i = 0; i < count; i++) {
+        sendMessageRef.current({
+          type: 'terminal-input',
+          sessionId: currentSessionId,
+          data: `\x1b[<${button};${col};${row}M`
+        })
+      }
+
+      // Track that we're in tmux copy-mode (scrolled back)
+      setTmuxCopyMode(true)
+    }
+
     const resetTouchState = () => {
-      lastTouchY.current = null
-      accumulatedDelta.current = 0
+      lastTouchY = null
+      velocity = 0
+      accumulatedDelta = 0
     }
 
     const hasActiveSelection = () => {
@@ -446,99 +567,179 @@ export default function Terminal({
     }
 
     const handleTouchStart = (e: TouchEvent) => {
+      stopMomentum()
+
+      // Skip if edge swiping (opening drawer) or drawer is open
+      if (isEdgeSwipingRef.current || isDrawerOpen) {
+        resetTouchState()
+        return
+      }
+
       if (isSelectingTextRef.current) {
         resetTouchState()
         return
       }
 
       if (e.touches.length === 1) {
-        touchStartPos = { x: e.touches[0].clientX, y: e.touches[0].clientY }
+        const touch = e.touches[0]
+        touchStartPos = { x: touch.clientX, y: touch.clientY }
+        touchStartTime = performance.now()
         hasMoved = false
-        lastTouchY.current = e.touches[0].clientY
-        accumulatedDelta.current = 0
+        lastTouchY = touch.clientY
+        lastTouchTime = touchStartTime
+        velocity = 0
+        accumulatedDelta = 0
+        lineHeightPx = resolveLineHeight()
 
         // Enable textarea on touch start so iOS long-press paste menu works
-        if (textarea) {
-          textarea.removeAttribute('disabled')
-        }
+        enableTextarea()
       }
     }
 
     const handleTouchMove = (e: TouchEvent) => {
-      if (isSelectingTextRef.current) {
+      if (e.touches.length !== 1 || lastTouchY === null) return
+
+      // Skip if edge swiping (opening drawer) or drawer is open
+      if (isEdgeSwipingRef.current || isDrawerOpen) {
         resetTouchState()
         return
       }
 
-      if (e.touches.length !== 1 || lastTouchY.current === null) return
+      if (isSelectingTextRef.current || hasActiveSelection()) {
+        resetTouchState()
+        return
+      }
 
-      const x = e.touches[0].clientX
-      const y = e.touches[0].clientY
+      e.preventDefault()
+      e.stopPropagation()
 
-      // Check if moved beyond tap threshold
+      const now = performance.now()
+      const touch = e.touches[0]
+      const x = touch.clientX
+      const y = touch.clientY
+
       const dx = Math.abs(x - touchStartPos.x)
       const dy = Math.abs(y - touchStartPos.y)
-      if (dx > TAP_MOVE_THRESHOLD || dy > TAP_MOVE_THRESHOLD) {
+      if (!hasMoved && (dx > TAP_MOVE_THRESHOLD || dy > TAP_MOVE_THRESHOLD)) {
         hasMoved = true
+        disableTextareaIfIdle()
       }
 
-      const deltaY = lastTouchY.current - y
-      lastTouchY.current = y
+      const deltaY = lastTouchY - y
+      const deltaTime = now - lastTouchTime
+      lastTouchY = y
+      lastTouchTime = now
 
-      accumulatedDelta.current += deltaY
-      const threshold = 30 // pixels per scroll event
-      const scrollEvents = Math.trunc(accumulatedDelta.current / threshold)
+      if (deltaTime > 0) {
+        const instantVelocity = deltaY / deltaTime
+        velocity = velocity * 0.7 + instantVelocity * 0.3
+      }
 
+      accumulatedDelta += deltaY
+      const threshold = Math.max(6, lineHeightPx * 0.6)
+      const scrollEvents = Math.trunc(accumulatedDelta / threshold)
       if (scrollEvents !== 0) {
-        // Send mouse wheel escape sequences (SGR mode)
-        const button = scrollEvents < 0 ? 64 : 65
-        const count = Math.abs(scrollEvents)
-        const cols = terminalRef.current?.cols ?? 80
-        const rows = terminalRef.current?.rows ?? 24
-        const col = Math.floor(cols / 2)
-        const row = Math.floor(rows / 2)
-
-        for (let i = 0; i < count; i++) {
-          const currentSessionId = sessionIdRef.current
-          if (currentSessionId) {
-            sendMessageRef.current({
-              type: 'terminal-input',
-              sessionId: currentSessionId,
-              data: `\x1b[<${button};${col};${row}M`
-            })
-          }
-        }
-        accumulatedDelta.current -= scrollEvents * threshold
+        sendScrollToTmux(scrollEvents)
+        accumulatedDelta -= scrollEvents * threshold
       }
     }
 
-    const handleTouchEnd = () => {
+    const handleTouchEnd = (e: TouchEvent) => {
+      const endVelocity = velocity
+      const touchDuration = performance.now() - touchStartTime
       resetTouchState()
 
-      if (isSelectingTextRef.current || hasActiveSelection()) return
+      // Skip if edge swiping (opening drawer) or drawer is open - let document handler process
+      if (isEdgeSwipingRef.current || isDrawerOpen) {
+        return
+      }
 
-      // Only count as tap if didn't move much
-      if (hasMoved) return
+      // If selecting text, let iOS handle the tap naturally to dismiss selection
+      // Don't preventDefault - that breaks iOS selection dismissal
+      // We'll swallow the synthetic mouse event instead to protect tmux
+      if (isSelectingTextRef.current || hasActiveSelection()) {
+        if (inTmuxCopyModeRef.current) {
+          swallowNextMouseRef.current = true
+        }
+        return
+      }
 
-      // Single tap - focus terminal for keyboard input
-      focusTerminalInput()
+      if (!hasMoved) {
+        if (isiOS && touchDuration >= LONG_PRESS_MS) return
+        // If in copy-mode, prevent tap from reaching xterm.js (which would send click to tmux and exit copy-mode)
+        if (inTmuxCopyModeRef.current) {
+          e.preventDefault()
+          e.stopPropagation()
+          swallowNextMouseRef.current = true
+          return
+        }
+        focusTerminalInput()
+        return
+      }
+
+      const minVelocity = 0.12 // pixels per ms
+      if (Math.abs(endVelocity) > minVelocity) {
+        let currentVelocity = endVelocity
+        let lastFrameTime = performance.now()
+
+        const animateMomentum = () => {
+          const now = performance.now()
+          const deltaTime = now - lastFrameTime
+          lastFrameTime = now
+
+          const distance = currentVelocity * deltaTime
+          accumulatedDelta += distance
+          const threshold = Math.max(6, lineHeightPx * 0.6)
+          const scrollEvents = Math.trunc(accumulatedDelta / threshold)
+          if (scrollEvents !== 0) {
+            sendScrollToTmux(scrollEvents)
+            accumulatedDelta -= scrollEvents * threshold
+          }
+
+          currentVelocity *= Math.pow(0.95, deltaTime / 16.67)
+
+          if (Math.abs(currentVelocity) > 0.02) {
+            momentumAnimationId = requestAnimationFrame(animateMomentum)
+          } else {
+            momentumAnimationId = null
+          }
+        }
+
+        momentumAnimationId = requestAnimationFrame(animateMomentum)
+      }
     }
 
-    container.addEventListener('touchstart', handleTouchStart, { passive: true })
-    container.addEventListener('touchmove', handleTouchMove, { passive: true })
-    container.addEventListener('touchend', handleTouchEnd, { passive: true })
+    // Swallow synthetic mouse events after iOS selection dismissal to protect tmux
+    const handleMouseDown = (e: MouseEvent) => {
+      if (swallowNextMouseRef.current) {
+        e.preventDefault()
+        e.stopPropagation()
+        swallowNextMouseRef.current = false
+      }
+    }
+
+    const startOptions: AddEventListenerOptions = { passive: true, capture: true }
+    const moveOptions: AddEventListenerOptions = { passive: false, capture: true }
+    const endOptions: AddEventListenerOptions = { passive: false, capture: true } // Need passive: false to preventDefault in copy-mode
+    const mouseOptions: AddEventListenerOptions = { capture: true }
+    container.addEventListener('touchstart', handleTouchStart, startOptions)
+    container.addEventListener('touchmove', handleTouchMove, moveOptions)
+    container.addEventListener('touchend', handleTouchEnd, endOptions)
+    container.addEventListener('mousedown', handleMouseDown, mouseOptions)
 
     return () => {
-      container.removeEventListener('touchstart', handleTouchStart)
-      container.removeEventListener('touchmove', handleTouchMove)
-      container.removeEventListener('touchend', handleTouchEnd)
+      container.removeEventListener('touchstart', handleTouchStart, startOptions)
+      container.removeEventListener('touchmove', handleTouchMove, moveOptions)
+      container.removeEventListener('touchend', handleTouchEnd, endOptions)
+      container.removeEventListener('mousedown', handleMouseDown, mouseOptions)
       // Re-enable textarea on cleanup
-      if (textarea) {
-        textarea.removeAttribute('disabled')
+      const cleanupTextarea = getTextarea()
+      if (cleanupTextarea) {
+        cleanupTextarea.disabled = false
       }
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps -- use session?.id and refs to avoid re-running on unrelated changes
-  }, [session?.id, containerRef, terminalRef, isiOS, isMobileLayout])
+  }, [session?.id, containerRef, terminalRef, isiOS, isMobileLayout, isDrawerOpen])
 
   const handleSendKey = useCallback(
     (key: string) => {
@@ -557,6 +758,21 @@ export default function Terminal({
       textarea.focus()
     }
   }, [containerRef])
+
+  // Enter text mode: exit copy-mode and focus input (for keyboard button)
+  const handleEnterTextMode = useCallback(() => {
+    if (session && inTmuxCopyModeRef.current) {
+      sendMessage({ type: 'tmux-cancel-copy-mode', sessionId: session.id })
+      setTmuxCopyMode(false)
+    }
+    const container = containerRef.current
+    if (!container) return
+    const textarea = container.querySelector('.xterm-helper-textarea') as HTMLTextAreaElement | null
+    if (textarea) {
+      textarea.removeAttribute('disabled')
+      textarea.focus()
+    }
+  }, [session, sendMessage, containerRef, inTmuxCopyModeRef, setTmuxCopyMode])
 
   const isKeyboardVisible = useCallback(() => {
     const container = containerRef.current
@@ -786,6 +1002,7 @@ export default function Terminal({
           hideSessionSwitcher
           onRefocus={handleRefocus}
           isKeyboardVisible={isKeyboardVisible}
+          onEnterTextMode={handleEnterTextMode}
         />
       )}
 

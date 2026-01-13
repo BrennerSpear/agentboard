@@ -128,6 +128,25 @@ export class SessionManager {
   }
 
   killWindow(tmuxWindow: string): void {
+    // Log window info before killing
+    try {
+      const info = this.runTmux([
+        'display-message',
+        '-t',
+        tmuxWindow,
+        '-p',
+        '#{window_name}\t#{pane_current_path}',
+      ])
+      const [name, path] = info.trim().split('\t')
+      console.log(
+        `[${new Date().toISOString()}] Killed window: ${name} (path: ${path})`
+      )
+    } catch {
+      // Window may already be gone, log what we know
+      console.log(
+        `[${new Date().toISOString()}] Killed window: ${tmuxWindow}`
+      )
+    }
     this.runTmux(['kill-window', '-t', tmuxWindow])
     paneContentCache.delete(tmuxWindow)
   }
