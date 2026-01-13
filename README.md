@@ -55,6 +55,9 @@ PORT=4040
 TMUX_SESSION=agentboard
 REFRESH_INTERVAL_MS=5000
 DISCOVER_PREFIXES=work,external
+VITE_ALLOWED_HOSTS=nuc,myserver
 ```
 
 `DISCOVER_PREFIXES` lets you see windows from other tmux sessions (view-only).
+
+`VITE_ALLOWED_HOSTS` allows access to the Vite dev server from other hostnames. Useful with Tailscale MagicDNS - add your machine name (e.g., `nuc`) to access the dev server at `http://nuc:5173` from other devices on your tailnet.
