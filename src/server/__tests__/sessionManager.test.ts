@@ -128,6 +128,10 @@ function createTmuxRunner(sessions: SessionState[], baseIndex = 0) {
   return { runTmux, calls, sessionMap }
 }
 
+function makePaneCapture(content: string, width = 80, height = 24) {
+  return { content, width, height }
+}
+
 describe('SessionManager', () => {
   test('listWindows keeps lastActivity stable until content changes', () => {
     const sessionName = 'agentboard-last-activity'
@@ -157,6 +161,88 @@ describe('SessionManager', () => {
       const sequence = contentSequences.get(tmuxWindow) ?? ['']
       const next = sequence.shift() ?? ''
       contentSequences.set(tmuxWindow, sequence)
+      return makePaneCapture(next)
+    }
+
+    let now = 1700000000000
+    const manager = new SessionManager(sessionName, {
+      runTmux: runner.runTmux,
+      capturePaneContent,
+      now: () => now,
+    })
+
+    const originalPrefixes = config.discoverPrefixes
+    config.discoverPrefixes = []
+    try {
+      const first = manager.listWindows()[0]
+      now += 60000
+      const second = manager.listWindows()[0]
+      now += 60000
+      const third = manager.listWindows()[0]
+
+      expect(first?.status).toBe('waiting')
+      expect(second?.status).toBe('waiting')
+      expect(third?.status).toBe('working')
+      expect(first?.lastActivity).toBe(second?.lastActivity)
+      expect(third?.lastActivity).not.toBe(second?.lastActivity)
+    } finally {
+      config.discoverPrefixes = originalPrefixes
+    }
+  })
+
+  test('listWindows ignores resize-only changes and detects real changes', () => {
+    const sessionName = 'agentboard-resize-detection'
+    const runner = createTmuxRunner(
+      [
+        {
+          name: sessionName,
+          windows: [
+            {
+              id: '1',
+              index: 1,
+              name: 'alpha',
+              path: '/tmp/alpha',
+              activity: 0,
+              command: 'claude',
+            },
+          ],
+        },
+      ],
+      1
+    )
+
+    const wideBorderTop = '\u250c\u2500\u2500\u2500\u2500\u2510'
+    const wideBorderBottom = '\u2514\u2500\u2500\u2500\u2500\u2518'
+    const narrowBorderTop = '\u250c\u2500\u2510'
+    const narrowBorderBottom = '\u2514\u2500\u2518'
+
+    const captures = new Map<string, ReturnType<typeof makePaneCapture>[]>([
+      [
+        `${sessionName}:1`,
+        [
+          makePaneCapture(
+            [wideBorderTop, 'Hello   world', wideBorderBottom].join('\n'),
+            120,
+            40
+          ),
+          makePaneCapture(
+            [narrowBorderTop, 'Hello world', narrowBorderBottom].join('\n'),
+            80,
+            24
+          ),
+          makePaneCapture(
+            [narrowBorderTop, 'Hello there', narrowBorderBottom].join('\n'),
+            80,
+            24
+          ),
+        ],
+      ],
+    ])
+
+    const capturePaneContent = (tmuxWindow: string) => {
+      const sequence = captures.get(tmuxWindow) ?? []
+      const next = sequence.shift() ?? null
+      captures.set(tmuxWindow, sequence)
       return next
     }
 
@@ -181,6 +267,137 @@ describe('SessionManager', () => {
       expect(third?.status).toBe('working')
       expect(first?.lastActivity).toBe(second?.lastActivity)
       expect(third?.lastActivity).not.toBe(second?.lastActivity)
+    } finally {
+      config.discoverPrefixes = originalPrefixes
+    }
+  })
+
+  test('listWindows ignores metadata changes during resize', () => {
+    const sessionName = 'agentboard-resize-metadata'
+    const runner = createTmuxRunner(
+      [
+        {
+          name: sessionName,
+          windows: [
+            {
+              id: '1',
+              index: 1,
+              name: 'alpha',
+              path: '/tmp/alpha',
+              activity: 0,
+              command: 'claude',
+            },
+          ],
+        },
+      ],
+      1
+    )
+
+    const captures = new Map<string, ReturnType<typeof makePaneCapture>[]>([
+      [
+        `${sessionName}:1`,
+        [
+          makePaneCapture(
+            [
+              'Output line',
+              '89% context left · ? for shortcuts',
+              '1 background terminal running · /ps to view',
+            ].join('\n'),
+            120,
+            40
+          ),
+          makePaneCapture(
+            ['Output line', '88% context left · ? for shortcuts'].join('\n'),
+            80,
+            24
+          ),
+        ],
+      ],
+    ])
+
+    const capturePaneContent = (tmuxWindow: string) => {
+      const sequence = captures.get(tmuxWindow) ?? []
+      const next = sequence.shift() ?? null
+      captures.set(tmuxWindow, sequence)
+      return next
+    }
+
+    let now = 1700000000000
+    const manager = new SessionManager(sessionName, {
+      runTmux: runner.runTmux,
+      capturePaneContent,
+      now: () => now,
+    })
+
+    const originalPrefixes = config.discoverPrefixes
+    config.discoverPrefixes = []
+    try {
+      const first = manager.listWindows()[0]
+      now += 60000
+      const second = manager.listWindows()[0]
+
+      expect(first?.status).toBe('waiting')
+      expect(second?.status).toBe('waiting')
+      expect(first?.lastActivity).toBe(second?.lastActivity)
+    } finally {
+      config.discoverPrefixes = originalPrefixes
+    }
+  })
+
+  test('listWindows returns permission for prompt content', () => {
+    const sessionName = 'agentboard-permission'
+    const runner = createTmuxRunner(
+      [
+        {
+          name: sessionName,
+          windows: [
+            {
+              id: '1',
+              index: 1,
+              name: 'alpha',
+              path: '/tmp/alpha',
+              activity: 0,
+              command: 'claude',
+            },
+          ],
+        },
+      ],
+      1
+    )
+
+    const captures = new Map<string, ReturnType<typeof makePaneCapture>[]>([
+      [
+        `${sessionName}:1`,
+        [
+          makePaneCapture('Do you want to proceed?\n1. Yes\n2. No', 120, 40),
+          makePaneCapture('Do you want to proceed?\n1. Yes\n2. No', 80, 24),
+        ],
+      ],
+    ])
+
+    const capturePaneContent = (tmuxWindow: string) => {
+      const sequence = captures.get(tmuxWindow) ?? []
+      const next = sequence.shift() ?? null
+      captures.set(tmuxWindow, sequence)
+      return next
+    }
+
+    let now = 1700000000000
+    const manager = new SessionManager(sessionName, {
+      runTmux: runner.runTmux,
+      capturePaneContent,
+      now: () => now,
+    })
+
+    const originalPrefixes = config.discoverPrefixes
+    config.discoverPrefixes = []
+    try {
+      const first = manager.listWindows()[0]
+      now += 60000
+      const second = manager.listWindows()[0]
+
+      expect(first?.status).toBe('permission')
+      expect(second?.status).toBe('permission')
     } finally {
       config.discoverPrefixes = originalPrefixes
     }
@@ -230,7 +447,7 @@ describe('SessionManager', () => {
       const sequence = contentSequences.get(tmuxWindow) ?? ['']
       const next = sequence.shift() ?? ''
       contentSequences.set(tmuxWindow, sequence)
-      return next
+      return makePaneCapture(next)
     }
 
     const manager = new SessionManager(managedSession, {
@@ -337,7 +554,7 @@ describe('SessionManager', () => {
 
     const manager = new SessionManager(sessionName, {
       runTmux: runner.runTmux,
-      capturePaneContent: () => '',
+      capturePaneContent: () => makePaneCapture(''),
       now: () => 1700000000000,
     })
 
@@ -365,7 +582,7 @@ describe('SessionManager', () => {
 
     const manager = new SessionManager(sessionName, {
       runTmux: runner.runTmux,
-      capturePaneContent: () => '',
+      capturePaneContent: () => makePaneCapture(''),
       now: () => 1700000000000,
     })
 
@@ -411,7 +628,7 @@ describe('SessionManager', () => {
 
     const manager = new SessionManager(sessionName, {
       runTmux: runner.runTmux,
-      capturePaneContent: () => '',
+      capturePaneContent: () => makePaneCapture(''),
       now: () => 1700000000000,
     })
 
@@ -448,7 +665,7 @@ describe('SessionManager', () => {
 
     const manager = new SessionManager(sessionName, {
       runTmux: runner.runTmux,
-      capturePaneContent: () => '',
+      capturePaneContent: () => makePaneCapture(''),
       now: () => 1700000000000,
     })
 
@@ -486,7 +703,7 @@ describe('SessionManager', () => {
 
     const manager = new SessionManager(sessionName, {
       runTmux: runner.runTmux,
-      capturePaneContent: () => '',
+      capturePaneContent: () => makePaneCapture(''),
     })
 
     manager.killWindow(`${sessionName}:1`)
@@ -517,12 +734,21 @@ describe('SessionManager', () => {
 
     const originalPrefixes = config.discoverPrefixes
     config.discoverPrefixes = []
-    bunAny.spawnSync = () =>
-      ({
+    bunAny.spawnSync = (args) => {
+      const command = Array.isArray(args) ? args[1] : ''
+      if (command === 'display-message') {
+        return {
+          exitCode: 0,
+          stdout: Buffer.from('80\t24'),
+          stderr: Buffer.from(''),
+        } as ReturnType<typeof Bun.spawnSync>
+      }
+      return {
         exitCode: 0,
         stdout: Buffer.from('content'),
         stderr: Buffer.from(''),
-      }) as ReturnType<typeof Bun.spawnSync>
+      } as ReturnType<typeof Bun.spawnSync>
+    }
 
     try {
       const manager = new SessionManager(sessionName, {

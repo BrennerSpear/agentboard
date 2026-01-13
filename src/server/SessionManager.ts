@@ -14,15 +14,29 @@ interface WindowInfo {
 }
 
 type TmuxRunner = (args: string[]) => string
-type CapturePane = (tmuxWindow: string) => string | null
 type NowFn = () => number
 
-// Cache of pane content and last-changed timestamp for change detection
+interface PaneCapture {
+  content: string
+  width: number
+  height: number
+}
+
+type CapturePane = (tmuxWindow: string) => PaneCapture | null
+
+// Cache of pane content, dimensions, and last-changed timestamp for change detection
 interface PaneCache {
   content: string
   lastChanged: number
+  width: number
+  height: number
 }
 const paneContentCache = new Map<string, PaneCache>()
+const statusDebugEnv = process.env.STATUS_DEBUG?.trim().toLowerCase()
+const STATUS_DEBUG =
+  statusDebugEnv === undefined || statusDebugEnv === ''
+    ? true
+    : statusDebugEnv !== '0' && statusDebugEnv !== 'false'
 const WINDOW_LIST_FORMAT =
   '#{window_id}\t#{window_name}\t#{pane_current_path}\t#{window_activity}\t#{window_creation_time}\t#{pane_start_command}'
 const WINDOW_LIST_FORMAT_FALLBACK =
@@ -48,7 +62,7 @@ export class SessionManager {
   ) {
     this.sessionName = sessionName
     this.runTmux = runTmuxOverride ?? runTmux
-    this.capturePaneContent = captureOverride ?? capturePaneContent
+    this.capturePaneContent = captureOverride ?? capturePaneWithDimensions
     this.now = now ?? Date.now
   }
 
@@ -110,7 +124,7 @@ export class SessionManager {
     const finalName = this.findAvailableName(baseName, existingNames)
     const nextIndex = this.findNextAvailableWindowIndex()
 
-    this.runTmux([
+    const tmuxArgs = [
       'new-window',
       '-t',
       `${this.sessionName}:${nextIndex}`,
@@ -119,7 +133,8 @@ export class SessionManager {
       '-c',
       resolvedPath,
       finalCommand,
-    ])
+    ]
+    this.runTmux(tmuxArgs)
 
     const sessions = this.listWindowsForSession(this.sessionName, 'managed')
     const created = sessions.find((session) => session.name === finalName)
@@ -393,13 +408,15 @@ interface StatusResult {
 
 function inferStatus(
   tmuxWindow: string,
-  capture: CapturePane = capturePaneContent,
+  capture: CapturePane = capturePaneWithDimensions,
   now: NowFn = Date.now
 ): StatusResult {
-  const content = capture(tmuxWindow)
-  if (content === null) {
+  const pane = capture(tmuxWindow)
+  if (pane === null) {
     return { status: 'unknown', lastChanged: now() }
   }
+
+  const { content, width, height } = pane
 
   // Check for permission prompts first (takes priority over working/waiting)
   if (detectsPermissionPrompt(content)) {
@@ -408,10 +425,63 @@ function inferStatus(
   }
 
   const cached = paneContentCache.get(tmuxWindow)
-  const contentChanged = cached === undefined || cached.content !== content
+  let contentChanged = false
+  if (cached !== undefined) {
+    const dimensionsChanged =
+      cached.width !== width || cached.height !== height
+    if (dimensionsChanged) {
+      const oldNormalized = normalizeContent(cached.content)
+      const newNormalized = normalizeContent(content)
+      const resizeStats = isMeaningfulResizeChange(
+        oldNormalized,
+        newNormalized
+      )
+      contentChanged = resizeStats.changed
+      logStatusDebug({
+        tmuxWindow,
+        reason: 'resize',
+        oldWidth: cached.width,
+        oldHeight: cached.height,
+        newWidth: width,
+        newHeight: height,
+        normalizedChanged: contentChanged,
+        overlapRatioMin: resizeStats.ratioMin,
+        overlapRatioMax: resizeStats.ratioMax,
+        overlapTokens: resizeStats.overlap,
+        oldTokenCount: resizeStats.leftSize,
+        newTokenCount: resizeStats.rightSize,
+        oldNormalized: tailContent(oldNormalized),
+        newNormalized: tailContent(newNormalized),
+        cachedLength: cached.content.length,
+        newLength: content.length,
+      })
+    } else {
+      contentChanged = cached.content !== content
+      if (contentChanged) {
+        logStatusDebug({
+          tmuxWindow,
+          reason: 'content-change',
+          width,
+          height,
+          cachedLength: cached.content.length,
+          newLength: content.length,
+          oldTail: tailContent(cached.content),
+          newTail: tailContent(content),
+        })
+      }
+    }
+  } else {
+    logStatusDebug({
+      tmuxWindow,
+      reason: 'initial',
+      width,
+      height,
+      contentLength: content.length,
+    })
+  }
   const lastChanged = contentChanged ? now() : (cached?.lastChanged ?? now())
 
-  paneContentCache.set(tmuxWindow, { content, lastChanged })
+  paneContentCache.set(tmuxWindow, { content, width, height, lastChanged })
 
   // If no previous content, assume waiting (just started monitoring)
   if (cached === undefined) {
@@ -422,8 +492,120 @@ function inferStatus(
   return { status: contentChanged ? 'working' : 'waiting', lastChanged }
 }
 
-function capturePaneContent(tmuxWindow: string): string | null {
+// Box-drawing and decorative characters (borders, lines, spacers)
+const DECORATIVE_LINE_PATTERN =
+  /^[\s─━│┃┄┅┆┇┈┉┊┋┌┐└┘├┤┬┴┼╔╗╚╝╠╣╦╩╬═╭╮╯╰▔▁]*$/
+const METADATA_LINE_PATTERNS: RegExp[] = [
+  /context left/i,
+  /background terminal running/i,
+  /\/ps to view/i,
+  /esc to interrupt/i,
+  /for shortcuts/i,
+]
+const TIMER_SEGMENT_PATTERN = /\(\d+s[^)]*\)/g
+const UI_GLYPH_PATTERN = /[•❯⏵⏺↵]/g
+
+function normalizeContent(content: string): string {
+  const lines = stripAnsi(content).split('\n')
+  return lines
+    .slice(-20)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .filter((line) => !DECORATIVE_LINE_PATTERN.test(line))
+    .filter(
+      (line) => !METADATA_LINE_PATTERNS.some((pattern) => pattern.test(line))
+    )
+    .map((line) => line.replace(TIMER_SEGMENT_PATTERN, '').trim())
+    .map((line) => line.replace(UI_GLYPH_PATTERN, ' ').trim())
+    .filter(Boolean)
+    .join(' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function tokenizeNormalized(content: string): string[] {
+  return content
+    .split(/\s+/)
+    .map((token) => token.trim())
+    .filter(Boolean)
+}
+
+function getTokenOverlapStats(left: string, right: string) {
+  const leftTokens = tokenizeNormalized(left)
+  const rightTokens = tokenizeNormalized(right)
+  const leftSet = new Set(leftTokens)
+  const rightSet = new Set(rightTokens)
+  let overlap = 0
+  for (const token of leftSet) {
+    if (rightSet.has(token)) {
+      overlap += 1
+    }
+  }
+  const leftSize = leftSet.size
+  const rightSize = rightSet.size
+  const minSize = Math.min(leftSize, rightSize)
+  const maxSize = Math.max(leftSize, rightSize)
+  const ratioMin = minSize === 0 ? 1 : overlap / minSize
+  const ratioMax = maxSize === 0 ? 1 : overlap / maxSize
+  return { overlap, leftSize, rightSize, ratioMin, ratioMax }
+}
+
+function isMeaningfulResizeChange(oldNormalized: string, newNormalized: string) {
+  if (oldNormalized === newNormalized) {
+    return { changed: false, ...getTokenOverlapStats(oldNormalized, newNormalized) }
+  }
+  const stats = getTokenOverlapStats(oldNormalized, newNormalized)
+  const maxSize = Math.max(stats.leftSize, stats.rightSize)
+  if (maxSize < 8) {
+    return { changed: true, ...stats }
+  }
+  const changed = stats.ratioMin < 0.9
+  return { changed, ...stats }
+}
+
+function tailContent(content: string, limit = 200): string {
+  if (content.length <= limit) {
+    return content
+  }
+  return `...${content.slice(-limit)}`
+}
+
+function logStatusDebug(payload: Record<string, unknown>): void {
+  if (!STATUS_DEBUG) {
+    return
+  }
+  console.log(
+    JSON.stringify({
+      event: 'status_debug',
+      ...payload,
+    })
+  )
+}
+
+function capturePaneWithDimensions(tmuxWindow: string): PaneCapture | null {
   try {
+    const dimsResult = Bun.spawnSync(
+      [
+        'tmux',
+        'display-message',
+        '-t',
+        tmuxWindow,
+        '-p',
+        '#{pane_width}\t#{pane_height}',
+      ],
+      { stdout: 'pipe', stderr: 'pipe' }
+    )
+    if (dimsResult.exitCode !== 0) {
+      return null
+    }
+
+    const [widthText, heightText] = dimsResult.stdout
+      .toString()
+      .trim()
+      .split('\t')
+    const width = Number.parseInt(widthText ?? '', 10) || 80
+    const height = Number.parseInt(heightText ?? '', 10) || 24
+
     // Use -J to unwrap lines and only capture visible content (no scrollback)
     // This prevents false positives from scrollback buffer changes on window focus
     const result = Bun.spawnSync(
@@ -435,7 +617,8 @@ function capturePaneContent(tmuxWindow: string): string | null {
     }
     // Only compare last 30 lines to avoid scrollback noise
     const lines = result.stdout.toString().split('\n')
-    return lines.slice(-30).join('\n')
+    const content = lines.slice(-30).join('\n')
+    return { content, width, height }
   } catch {
     return null
   }
