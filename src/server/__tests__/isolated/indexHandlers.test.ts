@@ -177,8 +177,19 @@ mock.module('../../SessionManager', () => ({
 mock.module('../../SessionRegistry', () => ({
   SessionRegistry: SessionRegistryMock,
 }))
+class TerminalProxyErrorMock extends Error {
+  code: string
+  retryable: boolean
+  constructor(message: string, code: string, retryable = false) {
+    super(message)
+    this.code = code
+    this.retryable = retryable
+  }
+}
+
 mock.module('../../TerminalProxy', () => ({
   TerminalProxy: TerminalProxyMock,
+  TerminalProxyError: TerminalProxyErrorMock,
 }))
 
 const baseSession: Session = {
