@@ -78,6 +78,8 @@ interface SettingsState {
   setDefaultCommand: (cmd: string) => void
   lastProjectPath: string | null
   setLastProjectPath: (path: string) => void
+  recentPaths: string[]
+  addRecentPath: (path: string) => void
   sessionSortMode: SessionSortMode
   setSessionSortMode: (mode: SessionSortMode) => void
   sessionSortDirection: SessionSortDirection
@@ -105,6 +107,10 @@ export const useSettingsStore = create<SettingsState>()(
       setDefaultCommand: (cmd) => set({ defaultCommand: cmd }),
       lastProjectPath: null,
       setLastProjectPath: (path) => set({ lastProjectPath: path }),
+      recentPaths: [],
+      addRecentPath: (path) => set((state) => ({
+        recentPaths: [path, ...state.recentPaths.filter(p => p !== path)].slice(0, 5),
+      })),
       sessionSortMode: 'created',
       setSessionSortMode: (mode) => set({ sessionSortMode: mode }),
       sessionSortDirection: 'desc',
@@ -187,6 +193,7 @@ export const useSettingsStore = create<SettingsState>()(
             commandPresets: presets,
             defaultPresetId,
             defaultCommand: oldCmd,
+            recentPaths: [],
           }
         }
 

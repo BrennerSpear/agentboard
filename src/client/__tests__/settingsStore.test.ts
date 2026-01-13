@@ -41,6 +41,7 @@ beforeEach(() => {
     defaultProjectDir: DEFAULT_PROJECT_DIR,
     defaultCommand: DEFAULT_COMMAND,
     lastProjectPath: null,
+    recentPaths: [],
     sessionSortMode: 'created',
     sessionSortDirection: 'desc',
   })
@@ -52,6 +53,7 @@ describe('useSettingsStore', () => {
     expect(state.defaultProjectDir).toBe(DEFAULT_PROJECT_DIR)
     expect(state.defaultCommand).toBe(DEFAULT_COMMAND)
     expect(state.lastProjectPath).toBeNull()
+    expect(state.recentPaths).toEqual([])
   })
 
   test('updates default project dir', () => {
@@ -67,6 +69,25 @@ describe('useSettingsStore', () => {
   test('updates last project path', () => {
     useSettingsStore.getState().setLastProjectPath('/projects/app')
     expect(useSettingsStore.getState().lastProjectPath).toBe('/projects/app')
+  })
+
+  test('tracks recent paths with uniqueness and max size', () => {
+    const { addRecentPath } = useSettingsStore.getState()
+    addRecentPath('/one')
+    addRecentPath('/two')
+    addRecentPath('/three')
+    addRecentPath('/four')
+    addRecentPath('/five')
+    addRecentPath('/six')
+    addRecentPath('/three')
+
+    expect(useSettingsStore.getState().recentPaths).toEqual([
+      '/three',
+      '/six',
+      '/five',
+      '/four',
+      '/two',
+    ])
   })
 
   test('updates session sort preferences', () => {

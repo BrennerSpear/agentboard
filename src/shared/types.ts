@@ -23,6 +23,24 @@ export interface Session {
   command?: string
 }
 
+// Directory browser types
+export interface DirectoryEntry {
+  name: string
+  path: string
+}
+
+export interface DirectoryListing {
+  path: string
+  parent: string | null
+  directories: DirectoryEntry[]
+  truncated: boolean
+}
+
+export interface DirectoryErrorResponse {
+  error: 'invalid_path' | 'forbidden' | 'not_found' | 'internal_error'
+  message: string
+}
+
 export type ServerMessage =
   | { type: 'sessions'; sessions: Session[] }
   | { type: 'session-update'; session: Session }

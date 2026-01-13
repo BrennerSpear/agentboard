@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { type CommandPreset, getFullCommand } from '../stores/settingsStore'
+import { DirectoryBrowser } from './DirectoryBrowser'
 
 interface NewSessionModalProps {
   isOpen: boolean
@@ -61,6 +62,7 @@ export default function NewSessionModal({
   const [modifiers, setModifiers] = useState('')
   const [customCommand, setCustomCommand] = useState('')
   const [isCustomMode, setIsCustomMode] = useState(false)
+  const [showBrowser, setShowBrowser] = useState(false)
   const formRef = useRef<HTMLFormElement>(null)
 
   // Get current preset
@@ -83,6 +85,7 @@ export default function NewSessionModal({
       setModifiers('')
       setCustomCommand('')
       setIsCustomMode(false)
+      setShowBrowser(false)
       // Focus terminal after modal closes
       setTimeout(() => {
         if (typeof document === 'undefined') return
@@ -126,6 +129,8 @@ export default function NewSessionModal({
     }
 
     const handleKeyDown = (e: KeyboardEvent) => {
+      if (showBrowser) return
+
       if (e.key === 'Escape') {
         onClose()
         return
@@ -157,7 +162,7 @@ export default function NewSessionModal({
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [isOpen, onClose])
+  }, [isOpen, onClose, showBrowser])
 
   if (!isOpen) {
     return null
@@ -217,6 +222,13 @@ export default function NewSessionModal({
     { id: 'custom', label: 'Custom', isCustom: true },
   ]
 
+  const browserInitialPath = resolveProjectPath({
+    value: projectPath,
+    activeProjectPath,
+    lastProjectPath,
+    defaultProjectDir,
+  }) || '~'
+
   return (
     <div
       role="dialog"
@@ -250,18 +262,27 @@ export default function NewSessionModal({
             <label className="mb-1.5 block text-xs text-secondary">
               Project Path
             </label>
-            <input
-              value={projectPath}
-              onChange={(event) => setProjectPath(event.target.value)}
-              placeholder={
-                activeProjectPath ||
-                lastProjectPath ||
-                defaultProjectDir ||
-                '/Users/you/code/my-project'
-              }
-              className="input"
-              autoFocus
-            />
+            <div className="flex gap-2">
+              <input
+                value={projectPath}
+                onChange={(event) => setProjectPath(event.target.value)}
+                placeholder={
+                  activeProjectPath ||
+                  lastProjectPath ||
+                  defaultProjectDir ||
+                  '/Users/you/code/my-project'
+                }
+                className="input flex-1"
+                autoFocus
+              />
+              <button
+                type="button"
+                className="btn"
+                onClick={() => setShowBrowser(true)}
+              >
+                Browse
+              </button>
+            </div>
           </div>
           <div>
             <label className="mb-1.5 block text-xs text-secondary">
@@ -364,6 +385,16 @@ export default function NewSessionModal({
           </button>
         </div>
       </form>
+      {showBrowser && (
+        <DirectoryBrowser
+          initialPath={browserInitialPath}
+          onSelect={(path) => {
+            setProjectPath(path)
+            setShowBrowser(false)
+          }}
+          onCancel={() => setShowBrowser(false)}
+        />
+      )}
     </div>
   )
 }

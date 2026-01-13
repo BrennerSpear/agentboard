@@ -1,7 +1,7 @@
-import path from 'node:path'
 import fs from 'node:fs'
 import { config } from './config'
 import { generateSessionName } from './nameGenerator'
+import { resolveProjectPath } from './paths'
 import type { AgentType, Session, SessionStatus } from '../shared/types'
 
 interface WindowInfo {
@@ -344,25 +344,6 @@ function runTmux(args: string[]): string {
   }
 
   return result.stdout.toString()
-}
-
-const homeDir = process.env.HOME || process.env.USERPROFILE || ''
-
-function resolveProjectPath(value: string): string {
-  const trimmed = value.trim()
-  if (!trimmed) {
-    return ''
-  }
-
-  if (
-    homeDir &&
-    (trimmed === '~' || trimmed.startsWith('~/') || trimmed.startsWith('~\\'))
-  ) {
-    const remainder = trimmed === '~' ? '' : trimmed.slice(2)
-    return path.resolve(path.join(homeDir, remainder))
-  }
-
-  return path.resolve(trimmed)
 }
 
 interface StatusResult {

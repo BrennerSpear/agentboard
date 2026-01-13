@@ -1,4 +1,6 @@
 import type { ServerWebSocket } from 'bun'
+import path from 'node:path'
+import fs from 'node:fs/promises'
 import { Hono } from 'hono'
 import { serveStatic } from 'hono/bun'
 import { config } from './config'
@@ -7,7 +9,14 @@ import { SessionManager } from './SessionManager'
 import { SessionRegistry } from './SessionRegistry'
 import { LegacyTerminalProxy } from './LegacyTerminalProxy'
 import { TerminalProxy, TerminalProxyError } from './TerminalProxy'
-import type { ClientMessage, ServerMessage, TerminalErrorCode } from '../shared/types'
+import { resolveProjectPath } from './paths'
+import type {
+  ClientMessage,
+  ServerMessage,
+  TerminalErrorCode,
+  DirectoryListing,
+  DirectoryErrorResponse,
+} from '../shared/types'
 
 function checkPortAvailable(port: number): void {
   let result: ReturnType<typeof Bun.spawnSync>
@@ -64,6 +73,7 @@ function getTailscaleIp(): string | null {
 }
 
 const MAX_FIELD_LENGTH = 4096
+const MAX_DIRECTORY_ENTRIES = 200
 const SESSION_ID_PATTERN = /^[A-Za-z0-9_.:@-]+$/
 const TMUX_TARGET_PATTERN =
   /^(?:[A-Za-z0-9_.-]+:)?(?:@[0-9]+|[A-Za-z0-9_.-]+)$/
@@ -101,6 +111,138 @@ registry.on('sessions', (sessions) => {
 
 app.get('/api/health', (c) => c.json({ ok: true }))
 app.get('/api/sessions', (c) => c.json(registry.getAll()))
+app.get('/api/directories', async (c) => {
+  const requestedPath = c.req.query('path') ?? '~'
+
+  if (requestedPath.length > MAX_FIELD_LENGTH) {
+    const payload: DirectoryErrorResponse = {
+      error: 'invalid_path',
+      message: 'Path too long',
+    }
+    return c.json(payload, 400)
+  }
+
+  const trimmedPath = requestedPath.trim()
+  if (!trimmedPath) {
+    const payload: DirectoryErrorResponse = {
+      error: 'invalid_path',
+      message: 'Path is required',
+    }
+    return c.json(payload, 400)
+  }
+
+  const start = Date.now()
+  const resolved = resolveProjectPath(trimmedPath)
+
+  let stats: Awaited<ReturnType<typeof fs.stat>>
+  try {
+    stats = await fs.stat(resolved)
+  } catch (error) {
+    const err = error as NodeJS.ErrnoException
+    if (err.code === 'ENOENT' || err.code === 'ENOTDIR') {
+      const payload: DirectoryErrorResponse = {
+        error: 'not_found',
+        message: 'Path does not exist',
+      }
+      return c.json(payload, 404)
+    }
+    if (err.code === 'EACCES' || err.code === 'EPERM') {
+      const payload: DirectoryErrorResponse = {
+        error: 'forbidden',
+        message: 'Permission denied',
+      }
+      return c.json(payload, 403)
+    }
+    const payload: DirectoryErrorResponse = {
+      error: 'internal_error',
+      message: 'Unable to read directory',
+    }
+    return c.json(payload, 500)
+  }
+
+  if (!stats.isDirectory()) {
+    const payload: DirectoryErrorResponse = {
+      error: 'not_found',
+      message: 'Path is not a directory',
+    }
+    return c.json(payload, 404)
+  }
+
+  let directories: DirectoryListing['directories'] = []
+  try {
+    const entries = await fs.readdir(resolved, {
+      withFileTypes: true,
+      encoding: 'utf8',
+    })
+    directories = entries
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => {
+        const name = entry.name.toString()
+        return {
+          name,
+          path: path.join(resolved, name),
+        }
+      })
+      .sort((a, b) => {
+        const aDot = a.name.startsWith('.')
+        const bDot = b.name.startsWith('.')
+        if (aDot !== bDot) {
+          return aDot ? -1 : 1
+        }
+        const aLower = a.name.toLowerCase()
+        const bLower = b.name.toLowerCase()
+        if (aLower < bLower) {
+          return -1
+        }
+        if (aLower > bLower) {
+          return 1
+        }
+        return a.name.localeCompare(b.name)
+      })
+  } catch (error) {
+    const err = error as NodeJS.ErrnoException
+    if (err.code === 'EACCES' || err.code === 'EPERM') {
+      const payload: DirectoryErrorResponse = {
+        error: 'forbidden',
+        message: 'Permission denied',
+      }
+      return c.json(payload, 403)
+    }
+    if (err.code === 'ENOENT' || err.code === 'ENOTDIR') {
+      const payload: DirectoryErrorResponse = {
+        error: 'not_found',
+        message: 'Path does not exist',
+      }
+      return c.json(payload, 404)
+    }
+    const payload: DirectoryErrorResponse = {
+      error: 'internal_error',
+      message: 'Unable to list directory',
+    }
+    return c.json(payload, 500)
+  }
+
+  const truncated = directories.length > MAX_DIRECTORY_ENTRIES
+  const limitedDirectories = truncated
+    ? directories.slice(0, MAX_DIRECTORY_ENTRIES)
+    : directories
+
+  const root = path.parse(resolved).root
+  const parent = resolved === root ? null : path.dirname(resolved)
+  const response: DirectoryListing = {
+    path: resolved,
+    parent,
+    directories: limitedDirectories,
+    truncated,
+  }
+
+  const durationMs = Date.now() - start
+  console.log(
+    `[directories] path="${resolved}" count=${limitedDirectories.length} truncated=${truncated} durationMs=${durationMs}`
+  )
+
+  return c.json(response)
+})
 
 app.get('/api/server-info', (c) => {
   const tailscaleIp = getTailscaleIp()

@@ -1,12 +1,24 @@
 import { afterAll, describe, expect, test, mock } from 'bun:test'
-import { renderToString } from 'react-dom/server'
+import TestRenderer, { act } from 'react-test-renderer'
 import type { Session } from '@shared/types'
 
 const globalAny = globalThis as typeof globalThis & {
+  window?: Window & typeof globalThis
+  document?: Document
+  navigator?: Navigator
+  ResizeObserver?: typeof ResizeObserver
   localStorage?: Storage
+  requestAnimationFrame?: typeof requestAnimationFrame
+  cancelAnimationFrame?: typeof cancelAnimationFrame
 }
 
+const originalWindow = globalAny.window
+const originalDocument = globalAny.document
+const originalNavigator = globalAny.navigator
+const originalResizeObserver = globalAny.ResizeObserver
 const originalLocalStorage = globalAny.localStorage
+const originalRequestAnimationFrame = globalAny.requestAnimationFrame
+const originalCancelAnimationFrame = globalAny.cancelAnimationFrame
 
 function createStorage(): Storage {
   const store = new Map<string, string>()
@@ -28,6 +40,76 @@ function createStorage(): Storage {
   } as Storage
 }
 
+const createMatchMedia = () => ({
+  matches: false,
+  addEventListener: () => {},
+  removeEventListener: () => {},
+  addListener: () => {},
+  removeListener: () => {},
+})
+
+function setupDom() {
+  const raf = (callback: FrameRequestCallback) =>
+    (setTimeout(() => callback(Date.now()), 0) as unknown as number)
+  const caf = (handle: number) => clearTimeout(handle)
+
+  globalAny.document = {
+    addEventListener: () => {},
+    removeEventListener: () => {},
+    querySelector: () => null,
+    activeElement: null,
+    documentElement: {
+      style: {
+        setProperty: () => {},
+        removeProperty: () => {},
+      },
+      setAttribute: () => {},
+      removeAttribute: () => {},
+    },
+  } as unknown as Document
+
+  globalAny.window = {
+    addEventListener: () => {},
+    removeEventListener: () => {},
+    setTimeout,
+    clearTimeout,
+    matchMedia: createMatchMedia,
+    requestAnimationFrame: raf,
+    cancelAnimationFrame: caf,
+    visualViewport: undefined,
+    innerWidth: 1200,
+    innerHeight: 800,
+    location: {
+      protocol: 'http:',
+      host: 'localhost:4040',
+      port: '4040',
+    },
+  } as unknown as Window & typeof globalThis
+
+  globalAny.navigator = {
+    platform: 'Win32',
+    userAgent: 'Chrome',
+    maxTouchPoints: 0,
+    clipboard: {
+      read: () => Promise.resolve([] as ClipboardItem[]),
+      readText: () => Promise.resolve(''),
+      writeText: () => Promise.resolve(),
+    },
+    vibrate: () => true,
+  } as unknown as Navigator
+
+  globalAny.ResizeObserver = class ResizeObserverMock {
+    constructor(_: ResizeObserverCallback) {}
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  }
+
+  globalAny.requestAnimationFrame = raf
+  globalAny.cancelAnimationFrame = caf
+}
+
+setupDom()
 globalAny.localStorage = createStorage()
 
 mock.module('@xterm/xterm', () => ({
@@ -43,6 +125,7 @@ mock.module('@xterm/xterm', () => ({
     onData() {}
     onScroll() {}
     attachCustomKeyEventHandler() { return true }
+    attachCustomWheelEventHandler() { return true }
     write() {}
     scrollToBottom() {}
     hasSelection() { return false }
@@ -72,6 +155,16 @@ mock.module('@xterm/addon-web-links', () => ({
   WebLinksAddon: class {},
 }))
 
+const actualWebSocket = await import('../hooks/useWebSocket')
+
+mock.module('../hooks/useWebSocket', () => ({
+  ...actualWebSocket,
+  useWebSocket: () => ({
+    sendMessage: () => {},
+    subscribe: () => () => {},
+  }),
+}))
+
 const [{ default: App }, { default: Header }, { default: SessionList }, { default: Terminal }, { default: TerminalControls }, { default: NewSessionModal }, { default: SettingsModal }, { default: DPad }, { default: NumPad }] =
   await Promise.all([
     import('../App'),
@@ -96,21 +189,38 @@ const baseSession: Session = {
   source: 'managed',
 }
 
+function renderMarkup(element: JSX.Element): string {
+  let renderer: any = null
+
+  act(() => {
+    renderer = TestRenderer.create(element)
+  })
+
+  const tree = renderer?.toJSON?.() ?? null
+  const output = tree === null ? '' : JSON.stringify(tree)
+
+  act(() => {
+    renderer?.unmount()
+  })
+
+  return output
+}
+
 describe('component rendering', () => {
   test('renders app shell', () => {
-    const html = renderToString(<App />)
+    const html = renderMarkup(<App />)
     expect(html).toContain('AGENTBOARD')
   })
 
   test('renders header', () => {
-    const html = renderToString(
+    const html = renderMarkup(
       <Header connectionStatus="connected" onNewSession={() => {}} tailscaleIp={null} />
     )
     expect(html).toContain('AGENTBOARD')
   })
 
   test('renders session list', () => {
-    const html = renderToString(
+    const html = renderMarkup(
       <SessionList
         sessions={[baseSession]}
         selectedSessionId="session-1"
@@ -125,7 +235,7 @@ describe('component rendering', () => {
   })
 
   test('renders session list loading and empty states', () => {
-    const loadingHtml = renderToString(
+    const loadingHtml = renderMarkup(
       <SessionList
         sessions={[]}
         selectedSessionId={null}
@@ -137,7 +247,7 @@ describe('component rendering', () => {
     )
     expect(loadingHtml).toContain('animate-pulse')
 
-    const emptyHtml = renderToString(
+    const emptyHtml = renderMarkup(
       <SessionList
         sessions={[]}
         selectedSessionId={null}
@@ -151,7 +261,7 @@ describe('component rendering', () => {
   })
 
   test('renders session list error state', () => {
-    const html = renderToString(
+    const html = renderMarkup(
       <SessionList
         sessions={[baseSession]}
         selectedSessionId={baseSession.id}
@@ -165,7 +275,7 @@ describe('component rendering', () => {
   })
 
   test('renders terminal', () => {
-    const html = renderToString(
+    const html = renderMarkup(
       <Terminal
         session={baseSession}
         sessions={[baseSession]}
@@ -184,7 +294,7 @@ describe('component rendering', () => {
   })
 
   test('renders terminal placeholder when no session selected', () => {
-    const html = renderToString(
+    const html = renderMarkup(
       <Terminal
         session={null}
         sessions={[]}
@@ -210,7 +320,7 @@ describe('component rendering', () => {
       status: 'waiting' as const,
     }
 
-    const html = renderToString(
+    const html = renderMarkup(
       <Terminal
         session={baseSession}
         sessions={[baseSession, secondSession]}
@@ -229,7 +339,7 @@ describe('component rendering', () => {
   })
 
   test('renders terminal controls', () => {
-    const html = renderToString(
+    const html = renderMarkup(
       <TerminalControls
         onSendKey={() => {}}
         sessions={[{ id: 'session-1', name: 'alpha', status: 'working' }]}
@@ -241,7 +351,7 @@ describe('component rendering', () => {
   })
 
   test('renders terminal controls session row when multiple sessions', () => {
-    const html = renderToString(
+    const html = renderMarkup(
       <TerminalControls
         onSendKey={() => {}}
         sessions={[
@@ -256,7 +366,7 @@ describe('component rendering', () => {
   })
 
   test('renders new session modal', () => {
-    const html = renderToString(
+    const html = renderMarkup(
       <NewSessionModal
         isOpen
         onClose={() => {}}
@@ -276,7 +386,7 @@ describe('component rendering', () => {
   })
 
   test('does not render new session modal when closed', () => {
-    const html = renderToString(
+    const html = renderMarkup(
       <NewSessionModal
         isOpen={false}
         onClose={() => {}}
@@ -296,20 +406,26 @@ describe('component rendering', () => {
   })
 
   test('renders settings modal', () => {
-    const html = renderToString(
+    const html = renderMarkup(
       <SettingsModal isOpen onClose={() => {}} />
     )
     expect(html).toContain('Settings')
   })
 
   test('renders controls widgets', () => {
-    const dpad = renderToString(<DPad onSendKey={() => {}} />)
-    const numpad = renderToString(<NumPad onSendKey={() => {}} />)
+    const dpad = renderMarkup(<DPad onSendKey={() => {}} />)
+    const numpad = renderMarkup(<NumPad onSendKey={() => {}} />)
     expect(dpad).toContain('terminal-key')
     expect(numpad).toContain('terminal-key')
   })
 })
 
 afterAll(() => {
+  globalAny.window = originalWindow
+  globalAny.document = originalDocument
+  globalAny.navigator = originalNavigator
+  globalAny.ResizeObserver = originalResizeObserver
   globalAny.localStorage = originalLocalStorage
+  globalAny.requestAnimationFrame = originalRequestAnimationFrame
+  globalAny.cancelAnimationFrame = originalCancelAnimationFrame
 })

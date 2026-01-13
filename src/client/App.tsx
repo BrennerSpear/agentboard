@@ -53,6 +53,7 @@ export default function App() {
   const setLastProjectPath = useSettingsStore(
     (state) => state.setLastProjectPath
   )
+  const addRecentPath = useSettingsStore((state) => state.addRecentPath)
   const shortcutModifier = useSettingsStore((state) => state.shortcutModifier)
 
   const { sendMessage, subscribe } = useWebSocket()
@@ -70,6 +71,7 @@ export default function App() {
       }
       if (message.type === 'session-created') {
         setSelectedSessionId(message.session.id)
+        addRecentPath(message.session.projectPath)
       }
       if (message.type === 'terminal-error') {
         if (!message.sessionId || message.sessionId === selectedSessionId) {
@@ -91,6 +93,7 @@ export default function App() {
     return () => { unsubscribe() }
   }, [
     selectedSessionId,
+    addRecentPath,
     sendMessage,
     setSelectedSessionId,
     setSessions,
