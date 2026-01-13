@@ -74,7 +74,10 @@ describe('port availability', () => {
     }
 
     expect(thrown?.message).toBe('exit:1')
-    const expectedPort = Number(process.env.PORT) || 4040
-    expect(errors.join('\n')).toContain(`Port ${expectedPort} already in use`)
+    expect(errors.length).toBeGreaterThan(0)
+    const logEntry = JSON.parse(errors[0])
+    expect(logEntry.event).toBe('port_in_use')
+    expect(logEntry.port).toBe(Number(process.env.PORT) || 4040)
+    expect(logEntry.level).toBe('error')
   })
 })

@@ -1,4 +1,5 @@
 import type { TerminalErrorCode } from '../shared/types'
+import { logger } from './logger'
 
 type SpawnFn = (
   args: string[],
@@ -382,14 +383,7 @@ export class TerminalProxy {
   }
 
   private logEvent(event: string, payload: Record<string, unknown> = {}): void {
-    console.log(
-      JSON.stringify({
-        event,
-        connectionId: this.options.connectionId,
-        sessionName: this.options.sessionName,
-        ...payload,
-      })
-    )
+    logger.debug(event, { connectionId: this.options.connectionId, ...payload })
   }
 }
 

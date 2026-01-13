@@ -16,6 +16,7 @@ import type {
   DirectoryListing,
   DirectoryErrorResponse,
 } from '../shared/types'
+import { logger } from './logger'
 
 function checkPortAvailable(port: number): void {
   let result: ReturnType<typeof Bun.spawnSync>
@@ -41,8 +42,7 @@ function checkPortAvailable(port: number): void {
       processName = nameResult.stdout?.toString().trim() || 'unknown'
     } catch {
     }
-    console.error(`\nPort ${port} already in use by PID ${pid} (${processName})`)
-    console.error(`Run: kill ${pid}\n`)
+    logger.error('port_in_use', { port, pid, processName })
     process.exit(1)
   }
 }
@@ -126,7 +126,7 @@ function pruneOrphanedWsSessions(): void {
   }
 
   if (pruned > 0) {
-    console.log(`[startup] Pruned ${pruned} orphaned ws sessions`)
+    logger.info('ws_sessions_pruned', { count: pruned })
   }
 }
 
@@ -296,9 +296,12 @@ app.get('/api/directories', async (c) => {
   }
 
   const durationMs = Date.now() - start
-  console.log(
-    `[directories] path="${resolved}" count=${limitedDirectories.length} truncated=${truncated} durationMs=${durationMs}`
-  )
+  logger.debug('directories_request', {
+    path: resolved,
+    count: limitedDirectories.length,
+    truncated,
+    durationMs,
+  })
 
   return c.json(response)
 })
@@ -397,13 +400,13 @@ Bun.serve<WSData>({
 
 const protocol = tlsEnabled ? 'https' : 'http'
 const displayHost = config.hostname === '0.0.0.0' ? 'localhost' : config.hostname
-console.log(`Agentboard server running on ${protocol}://${displayHost}:${config.port}`)
-if (config.hostname === '0.0.0.0') {
-  const tsIp = getTailscaleIp()
-  if (tsIp) {
-    console.log(`  Also accessible at: ${protocol}://${tsIp}:${config.port}`)
-  }
-}
+logger.info('server_started', {
+  url: `${protocol}://${displayHost}:${config.port}`,
+  tailscaleUrl: config.hostname === '0.0.0.0' ? (() => {
+    const tsIp = getTailscaleIp()
+    return tsIp ? `${protocol}://${tsIp}:${config.port}` : null
+  })() : null,
+})
 
 // Cleanup all terminals on server shutdown
 function cleanupAllTerminals() {

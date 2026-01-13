@@ -1,6 +1,7 @@
 import fs from 'node:fs'
 import { config } from './config'
 import { generateSessionName } from './nameGenerator'
+import { logger } from './logger'
 import { resolveProjectPath } from './paths'
 import type { AgentType, Session, SessionStatus } from '../shared/types'
 
@@ -152,14 +153,10 @@ export class SessionManager {
         '#{window_name}\t#{pane_current_path}',
       ])
       const [name, path] = info.trim().split('\t')
-      console.log(
-        `[${new Date().toISOString()}] Killed window: ${name} (path: ${path})`
-      )
+      logger.info('window_killed', { tmuxWindow, name, path })
     } catch {
       // Window may already be gone, log what we know
-      console.log(
-        `[${new Date().toISOString()}] Killed window: ${tmuxWindow}`
-      )
+      logger.info('window_killed', { tmuxWindow })
     }
     this.runTmux(['kill-window', '-t', tmuxWindow])
     paneContentCache.delete(tmuxWindow)
