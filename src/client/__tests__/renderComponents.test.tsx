@@ -49,23 +49,40 @@ const createMatchMedia = () => ({
 })
 
 function setupDom() {
+  class NodeMock {}
+  class ElementMock extends NodeMock {}
+  class HTMLElementMock extends ElementMock {}
   const raf = (callback: FrameRequestCallback) =>
     (setTimeout(() => callback(Date.now()), 0) as unknown as number)
   const caf = (handle: number) => clearTimeout(handle)
+
+  const createStyle = () => ({
+    setProperty: () => {},
+    removeProperty: () => {},
+  })
+
+  const createElement = (tagName = 'div') =>
+    Object.assign(new HTMLElementMock(), {
+      tagName: tagName.toUpperCase(),
+      style: createStyle(),
+      focus: () => {},
+      setAttribute: () => {},
+      removeAttribute: () => {},
+      appendChild: () => {},
+      remove: () => {},
+    })
 
   globalAny.document = {
     addEventListener: () => {},
     removeEventListener: () => {},
     querySelector: () => null,
+    createElement,
     activeElement: null,
-    documentElement: {
-      style: {
-        setProperty: () => {},
-        removeProperty: () => {},
-      },
+    documentElement: Object.assign(createElement('html'), {
+      style: createStyle(),
       setAttribute: () => {},
       removeAttribute: () => {},
-    },
+    }),
   } as unknown as Document
 
   globalAny.window = {
@@ -79,6 +96,26 @@ function setupDom() {
     visualViewport: undefined,
     innerWidth: 1200,
     innerHeight: 800,
+    Node: NodeMock,
+    Element: ElementMock,
+    HTMLElement: HTMLElementMock,
+    document: globalAny.document,
+    getComputedStyle: () => ({
+      overflow: 'visible',
+      overflowX: 'visible',
+      overflowY: 'visible',
+      display: 'block',
+      transform: 'none',
+      translate: 'none',
+      scale: 'none',
+      rotate: 'none',
+      perspective: 'none',
+      containerType: 'normal',
+      backdropFilter: 'none',
+      filter: 'none',
+      willChange: '',
+      contain: '',
+    }),
     location: {
       protocol: 'http:',
       host: 'localhost:4040',
@@ -86,6 +123,9 @@ function setupDom() {
     },
   } as unknown as Window & typeof globalThis
 
+  globalAny.Node = NodeMock as unknown as typeof Node
+  globalAny.Element = ElementMock as unknown as typeof Element
+  globalAny.HTMLElement = HTMLElementMock as unknown as typeof HTMLElement
   globalAny.navigator = {
     platform: 'Win32',
     userAgent: 'Chrome',
