@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test, mock } from 'bun:test'
+import { afterAll, afterEach, beforeEach, describe, expect, test, mock } from 'bun:test'
 import type { Session, ServerMessage } from '@shared/types'
 
 const bunAny = Bun as typeof Bun & {
@@ -160,7 +160,7 @@ class TerminalProxyMock {
   }
 }
 
-mock.module('../config', () => ({
+mock.module('../../config', () => ({
   config: {
     port: 4040,
     refreshIntervalMs: 1000,
@@ -171,13 +171,13 @@ mock.module('../config', () => ({
     tlsKey: '',
   },
 }))
-mock.module('../SessionManager', () => ({
+mock.module('../../SessionManager', () => ({
   SessionManager: SessionManagerMock,
 }))
-mock.module('../SessionRegistry', () => ({
+mock.module('../../SessionRegistry', () => ({
   SessionRegistry: SessionRegistryMock,
 }))
-mock.module('../TerminalProxy', () => ({
+mock.module('../../TerminalProxy', () => ({
   TerminalProxy: TerminalProxyMock,
 }))
 
@@ -212,7 +212,7 @@ let importCounter = 0
 
 async function loadIndex() {
   importCounter += 1
-  await import(`../index?test=${importCounter}`)
+  await import(`../../index?test=${importCounter}`)
   if (!serveOptions) {
     throw new Error('Bun.serve was not called')
   }
@@ -275,6 +275,10 @@ afterEach(() => {
   console.error = originalConsoleError
   processAny.on = originalProcessOn
   processAny.exit = originalProcessExit
+})
+
+afterAll(() => {
+  mock.restore()
 })
 
 describe('server message handlers', () => {
