@@ -141,17 +141,27 @@ class TerminalProxyMock {
   }
 }
 
-mock.module('../config', () => ({
+mock.module('../../config', () => ({
   config: { port: 4040, refreshIntervalMs: 1000 },
 }))
-mock.module('../SessionManager', () => ({
+mock.module('../../SessionManager', () => ({
   SessionManager: SessionManagerMock,
 }))
-mock.module('../SessionRegistry', () => ({
+mock.module('../../SessionRegistry', () => ({
   SessionRegistry: SessionRegistryMock,
 }))
-mock.module('../TerminalProxy', () => ({
+class TerminalProxyErrorMock extends Error {
+  code: string
+  retryable: boolean
+  constructor(code: string, message: string, retryable: boolean) {
+    super(message)
+    this.code = code
+    this.retryable = retryable
+  }
+}
+mock.module('../../TerminalProxy', () => ({
   TerminalProxy: TerminalProxyMock,
+  TerminalProxyError: TerminalProxyErrorMock,
 }))
 
 const baseSession: Session = {
@@ -180,7 +190,7 @@ let importCounter = 0
 
 async function loadIndex() {
   importCounter += 1
-  await import(`../index?test=${importCounter}`)
+  await import(`../../index?test=${importCounter}`)
   if (!serveOptions) {
     throw new Error('Bun.serve was not called')
   }
