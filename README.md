@@ -57,8 +57,12 @@ TMUX_SESSION=agentboard
 REFRESH_INTERVAL_MS=5000
 DISCOVER_PREFIXES=work,external
 PRUNE_WS_SESSIONS=true
+TERMINAL_MODE=pty
+TERMINAL_MONITOR_TARGETS=true
 ```
 
 `HOSTNAME` controls which interfaces the server binds to (default `0.0.0.0` for network access; use `127.0.0.1` for local-only).
 `DISCOVER_PREFIXES` lets you discover and control windows from other tmux sessions. If unset, all sessions except the managed one are discovered.
 `PRUNE_WS_SESSIONS` removes orphaned `agentboard-ws-*` tmux sessions on startup (set to `false` to disable).
+`TERMINAL_MODE` selects terminal I/O strategy: `pty` (default, grouped session) or `pipe-pane` (PTY-less, works in daemon/systemd/docker without `-t`).
+`TERMINAL_MONITOR_TARGETS` (pipe-pane only) polls tmux to detect closed targets (set to `false` to disable).

@@ -7,7 +7,12 @@ import { config } from './config'
 import { ensureTmux } from './prerequisites'
 import { SessionManager } from './SessionManager'
 import { SessionRegistry } from './SessionRegistry'
-import { TerminalProxy, TerminalProxyError } from './TerminalProxy'
+import {
+  createTerminalProxy,
+  resolveTerminalMode,
+  TerminalProxyError,
+} from './terminal'
+import type { ITerminalProxy } from './terminal'
 import { resolveProjectPath } from './paths'
 import type {
   ClientMessage,
@@ -147,6 +152,11 @@ function createConnectionId(): string {
 checkPortAvailable(config.port)
 ensureTmux()
 pruneOrphanedWsSessions()
+const resolvedTerminalMode = resolveTerminalMode()
+logger.info('terminal_mode_resolved', {
+  configured: config.terminalMode,
+  resolved: resolvedTerminalMode,
+})
 
 const app = new Hono()
 const sessionManager = new SessionManager()
@@ -345,7 +355,7 @@ app.post('/api/paste-image', async (c) => {
 app.use('/*', serveStatic({ root: './dist/client' }))
 
 interface WSData {
-  terminal: TerminalProxy | null
+  terminal: ITerminalProxy | null
   currentSessionId: string | null
   connectionId: string
 }
@@ -588,10 +598,11 @@ function initializePersistentTerminal(ws: ServerWebSocket<WSData>) {
 function createPersistentTerminal(ws: ServerWebSocket<WSData>) {
   const sessionName = `${config.tmuxSession}-ws-${ws.data.connectionId}`
 
-  const terminal = new TerminalProxy({
+  const terminal = createTerminalProxy({
     connectionId: ws.data.connectionId,
     sessionName,
     baseSession: config.tmuxSession,
+    monitorTargets: config.terminalMonitorTargets,
     onData: (data) => {
       const sessionId = ws.data.currentSessionId
       if (!sessionId) {
@@ -621,7 +632,7 @@ function createPersistentTerminal(ws: ServerWebSocket<WSData>) {
 
 async function ensurePersistentTerminal(
   ws: ServerWebSocket<WSData>
-): Promise<TerminalProxy | null> {
+): Promise<ITerminalProxy | null> {
   if (!ws.data.terminal) {
     ws.data.terminal = createPersistentTerminal(ws)
   }

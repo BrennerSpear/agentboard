@@ -168,6 +168,8 @@ mock.module('../../config', () => ({
     tmuxSession: 'agentboard',
     discoverPrefixes: [],
     pruneWsSessions: true,
+    terminalMode: 'pty',
+    terminalMonitorTargets: true,
     tlsCert: '',
     tlsKey: '',
   },
@@ -188,8 +190,10 @@ class TerminalProxyErrorMock extends Error {
   }
 }
 
-mock.module('../../TerminalProxy', () => ({
-  TerminalProxy: TerminalProxyMock,
+mock.module('../../terminal', () => ({
+  createTerminalProxy: (options: ConstructorParameters<typeof TerminalProxyMock>[0]) =>
+    new TerminalProxyMock(options),
+  resolveTerminalMode: () => 'pty',
   TerminalProxyError: TerminalProxyErrorMock,
 }))
 
