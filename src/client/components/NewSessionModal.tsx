@@ -85,6 +85,7 @@ export default function NewSessionModal({
       setIsCustomMode(false)
       // Focus terminal after modal closes
       setTimeout(() => {
+        if (typeof document === 'undefined') return
         const textarea = document.querySelector('.xterm-helper-textarea') as HTMLTextAreaElement | null
         if (textarea) {
           textarea.removeAttribute('disabled')

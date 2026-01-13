@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test, mock } from 'bun:test'
+import { afterAll, afterEach, beforeEach, describe, expect, test, mock } from 'bun:test'
 import type { Session, ServerMessage } from '@shared/types'
 
 const bunAny = Bun as typeof Bun & {
@@ -98,45 +98,26 @@ class SessionRegistryMock {
 
 class TerminalProxyMock {
   static instances: TerminalProxyMock[] = []
-  options: {
-    connectionId: string
-    sessionName: string
-    baseSession: string
-    onData: (data: string) => void
-    onExit?: () => void
-  }
+  tmuxWindow: string
+  onData?: (data: string) => void
+  onExit?: () => void
   starts = 0
   writes: string[] = []
   resizes: Array<{ cols: number; rows: number }> = []
   disposed = false
-  switchTargets: string[] = []
-  private started = false
 
-  constructor(options: {
-    connectionId: string
-    sessionName: string
-    baseSession: string
-    onData: (data: string) => void
-    onExit?: () => void
-  }) {
-    this.options = options
+  constructor(
+    tmuxWindow: string,
+    handlers: { onData?: (data: string) => void; onExit?: () => void }
+  ) {
+    this.tmuxWindow = tmuxWindow
+    this.onData = handlers.onData
+    this.onExit = handlers.onExit
     TerminalProxyMock.instances.push(this)
   }
 
   start() {
-    if (!this.started) {
-      this.starts += 1
-      this.started = true
-    }
-    return Promise.resolve()
-  }
-
-  switchTo(target: string, onReady?: () => void) {
-    this.switchTargets.push(target)
-    if (onReady) {
-      onReady()
-    }
-    return Promise.resolve(true)
+    this.starts += 1
   }
 
   write(data: string) {
@@ -152,32 +133,24 @@ class TerminalProxyMock {
   }
 
   emitData(data: string) {
-    this.options.onData(data)
+    this.onData?.(data)
   }
 
   emitExit() {
-    this.options.onExit?.()
+    this.onExit?.()
   }
 }
 
-mock.module('../config', () => ({
-  config: {
-    port: 4040,
-    refreshIntervalMs: 1000,
-    tmuxSession: 'agentboard',
-    persistentClient: true,
-    discoverPrefixes: [],
-    tlsCert: '',
-    tlsKey: '',
-  },
+mock.module('../../config', () => ({
+  config: { port: 4040, refreshIntervalMs: 1000 },
 }))
-mock.module('../SessionManager', () => ({
+mock.module('../../SessionManager', () => ({
   SessionManager: SessionManagerMock,
 }))
-mock.module('../SessionRegistry', () => ({
+mock.module('../../SessionRegistry', () => ({
   SessionRegistry: SessionRegistryMock,
 }))
-mock.module('../TerminalProxy', () => ({
+mock.module('../../TerminalProxy', () => ({
   TerminalProxy: TerminalProxyMock,
 }))
 
@@ -195,12 +168,7 @@ const baseSession: Session = {
 function createWs() {
   const sent: ServerMessage[] = []
   const ws = {
-    data: {
-      terminals: new Map<string, TerminalProxyMock>(),
-      terminal: null as TerminalProxyMock | null,
-      currentSessionId: null as string | null,
-      connectionId: 'ws-test',
-    },
+    data: { terminals: new Map<string, TerminalProxyMock>() },
     send: (payload: string) => {
       sent.push(JSON.parse(payload) as ServerMessage)
     },
@@ -212,7 +180,7 @@ let importCounter = 0
 
 async function loadIndex() {
   importCounter += 1
-  await import(`../index?test=${importCounter}`)
+  await import(`../../index?test=${importCounter}`)
   if (!serveOptions) {
     throw new Error('Bun.serve was not called')
   }
@@ -277,6 +245,10 @@ afterEach(() => {
   processAny.exit = originalProcessExit
 })
 
+afterAll(() => {
+  mock.restore()
+})
+
 describe('server message handlers', () => {
   test('websocket open sends sessions and registry broadcasts', async () => {
     const { serveOptions, registryInstance } = await loadIndex()
@@ -322,13 +294,7 @@ describe('server message handlers', () => {
       message: 'Invalid message payload',
     })
     expect(sent[1]).toEqual({ type: 'error', message: 'Unknown message type' })
-    expect(sent[2]).toEqual({
-      type: 'terminal-error',
-      sessionId: 'missing',
-      code: 'ERR_INVALID_WINDOW',
-      message: 'Session not found',
-      retryable: false,
-    })
+    expect(sent[2]).toEqual({ type: 'error', message: 'Session not found' })
   })
 
   test('refreshes sessions and creates new sessions', async () => {
@@ -494,35 +460,18 @@ describe('server message handlers', () => {
       throw new Error('WebSocket handlers not configured')
     }
 
-    websocket.open?.(ws as never)
+    const existing = new TerminalProxyMock('agentboard:old', {})
+    ws.data.terminals.set('old', existing)
 
     websocket.message?.(
       ws as never,
-      JSON.stringify({
-        type: 'terminal-attach',
-        sessionId: baseSession.id,
-        tmuxTarget: baseSession.tmuxWindow,
-      })
+      JSON.stringify({ type: 'terminal-attach', sessionId: baseSession.id })
     )
 
-    // Wait for async attach operations to complete
-    await new Promise((r) => setTimeout(r, 0))
-
-    const attached = ws.data.terminal
-    if (!attached) {
-      throw new Error('Expected terminal to be created')
-    }
-
-    expect(attached.starts).toBe(1)
-    expect(attached.switchTargets).toEqual([baseSession.tmuxWindow])
-    expect(ws.data.currentSessionId).toBe(baseSession.id)
-    expect(
-      sent.some(
-        (message) =>
-          message.type === 'terminal-ready' &&
-          message.sessionId === baseSession.id
-      )
-    ).toBe(true)
+    expect(existing.disposed).toBe(true)
+    expect(ws.data.terminals.has(baseSession.id)).toBe(true)
+    const latestIndex = TerminalProxyMock.instances.length - 1
+    expect(TerminalProxyMock.instances[latestIndex]?.starts).toBe(1)
 
     websocket.message?.(
       ws as never,
@@ -542,6 +491,7 @@ describe('server message handlers', () => {
       })
     )
 
+    const attached = TerminalProxyMock.instances[latestIndex]
     expect(attached?.writes).toEqual(['ls'])
     expect(attached?.resizes).toEqual([{ cols: 120, rows: 40 }])
 
@@ -552,17 +502,12 @@ describe('server message handlers', () => {
       ws as never,
       JSON.stringify({ type: 'terminal-detach', sessionId: baseSession.id })
     )
-    expect(ws.data.currentSessionId).toBe(null)
-    expect(attached?.disposed).toBe(false)
+    expect(attached?.disposed).toBe(true)
+    expect(ws.data.terminals.has(baseSession.id)).toBe(false)
 
-    const outputCount = sent.filter(
-      (message) => message.type === 'terminal-output'
-    ).length
-    attached?.emitData('ignored')
-    const outputCountAfter = sent.filter(
-      (message) => message.type === 'terminal-output'
-    ).length
-    expect(outputCountAfter).toBe(outputCount)
+    attached?.emitExit()
+    expect(attached?.disposed).toBe(true)
+    expect(ws.data.terminals.has(baseSession.id)).toBe(false)
   })
 
   test('websocket close disposes all terminals', async () => {
@@ -572,18 +517,17 @@ describe('server message handlers', () => {
       throw new Error('WebSocket handlers not configured')
     }
 
+    const terminalA = new TerminalProxyMock('agentboard:1', {})
+    const terminalB = new TerminalProxyMock('agentboard:2', {})
     const { ws } = createWs()
-    websocket.open?.(ws as never)
-
-    const terminal = ws.data.terminal
-    if (!terminal) {
-      throw new Error('Expected terminal to be created')
-    }
+    ws.data.terminals.set('session-a', terminalA)
+    ws.data.terminals.set('session-b', terminalB)
 
     websocket.close?.(ws as never, 1000, 'test')
 
-    expect(terminal.disposed).toBe(true)
-    expect(ws.data.terminal).toBe(null)
+    expect(terminalA.disposed).toBe(true)
+    expect(terminalB.disposed).toBe(true)
+    expect(ws.data.terminals.size).toBe(0)
   })
 })
 
@@ -613,17 +557,10 @@ describe('server signal handlers', () => {
     websocket.open?.(ws as never)
     websocket.message?.(
       ws as never,
-      JSON.stringify({
-        type: 'terminal-attach',
-        sessionId: baseSession.id,
-        tmuxTarget: baseSession.tmuxWindow,
-      })
+      JSON.stringify({ type: 'terminal-attach', sessionId: baseSession.id })
     )
 
-    const attached = ws.data.terminal
-    if (!attached) {
-      throw new Error('Expected terminal to be created')
-    }
+    const attached = TerminalProxyMock.instances[TerminalProxyMock.instances.length - 1]
 
     handlers.get('SIGINT')?.()
     handlers.get('SIGTERM')?.()
