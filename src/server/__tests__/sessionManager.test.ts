@@ -77,7 +77,11 @@ function createTmuxRunner(sessions: SessionState[], baseIndex = 0) {
       const target = args[2]
       const name = args[4]
       const cwd = args[6]
-      const startCommand = args[7]
+      // Find the actual command after '--' and '-c' (wrapped in shell)
+      // Format: [..., '--', 'shell', '-i', '-c', 'actual-command']
+      const dashDashIdx = args.indexOf('--')
+      const cIdx = dashDashIdx !== -1 ? args.indexOf('-c', dashDashIdx) : -1
+      const startCommand = cIdx !== -1 && cIdx + 1 < args.length ? args[cIdx + 1] : args[7]
       const [sessionName, indexText] = target.split(':')
       const index = Number.parseInt(indexText ?? '', 10)
       const windows = sessionMap.get(sessionName) ?? []
@@ -128,6 +132,10 @@ function createTmuxRunner(sessions: SessionState[], baseIndex = 0) {
   return { runTmux, calls, sessionMap }
 }
 
+function makePaneCapture(content: string, width = 80, height = 24) {
+  return { content, width, height }
+}
+
 describe('SessionManager', () => {
   test('listWindows keeps lastActivity stable until content changes', () => {
     const sessionName = 'agentboard-last-activity'
@@ -157,6 +165,88 @@ describe('SessionManager', () => {
       const sequence = contentSequences.get(tmuxWindow) ?? ['']
       const next = sequence.shift() ?? ''
       contentSequences.set(tmuxWindow, sequence)
+      return makePaneCapture(next)
+    }
+
+    let now = 1700000000000
+    const manager = new SessionManager(sessionName, {
+      runTmux: runner.runTmux,
+      capturePaneContent,
+      now: () => now,
+    })
+
+    const originalPrefixes = config.discoverPrefixes
+    config.discoverPrefixes = []
+    try {
+      const first = manager.listWindows()[0]
+      now += 60000
+      const second = manager.listWindows()[0]
+      now += 60000
+      const third = manager.listWindows()[0]
+
+      expect(first?.status).toBe('waiting')
+      expect(second?.status).toBe('waiting')
+      expect(third?.status).toBe('working')
+      expect(first?.lastActivity).toBe(second?.lastActivity)
+      expect(third?.lastActivity).not.toBe(second?.lastActivity)
+    } finally {
+      config.discoverPrefixes = originalPrefixes
+    }
+  })
+
+  test('listWindows ignores resize-only changes and detects real changes', () => {
+    const sessionName = 'agentboard-resize-detection'
+    const runner = createTmuxRunner(
+      [
+        {
+          name: sessionName,
+          windows: [
+            {
+              id: '1',
+              index: 1,
+              name: 'alpha',
+              path: '/tmp/alpha',
+              activity: 0,
+              command: 'claude',
+            },
+          ],
+        },
+      ],
+      1
+    )
+
+    const wideBorderTop = '\u250c\u2500\u2500\u2500\u2500\u2510'
+    const wideBorderBottom = '\u2514\u2500\u2500\u2500\u2500\u2518'
+    const narrowBorderTop = '\u250c\u2500\u2510'
+    const narrowBorderBottom = '\u2514\u2500\u2518'
+
+    const captures = new Map<string, ReturnType<typeof makePaneCapture>[]>([
+      [
+        `${sessionName}:1`,
+        [
+          makePaneCapture(
+            [wideBorderTop, 'Hello   world', wideBorderBottom].join('\n'),
+            120,
+            40
+          ),
+          makePaneCapture(
+            [narrowBorderTop, 'Hello world', narrowBorderBottom].join('\n'),
+            80,
+            24
+          ),
+          makePaneCapture(
+            [narrowBorderTop, 'Hello there', narrowBorderBottom].join('\n'),
+            80,
+            24
+          ),
+        ],
+      ],
+    ])
+
+    const capturePaneContent = (tmuxWindow: string) => {
+      const sequence = captures.get(tmuxWindow) ?? []
+      const next = sequence.shift() ?? null
+      captures.set(tmuxWindow, sequence)
       return next
     }
 
@@ -181,6 +271,137 @@ describe('SessionManager', () => {
       expect(third?.status).toBe('working')
       expect(first?.lastActivity).toBe(second?.lastActivity)
       expect(third?.lastActivity).not.toBe(second?.lastActivity)
+    } finally {
+      config.discoverPrefixes = originalPrefixes
+    }
+  })
+
+  test('listWindows ignores metadata changes during resize', () => {
+    const sessionName = 'agentboard-resize-metadata'
+    const runner = createTmuxRunner(
+      [
+        {
+          name: sessionName,
+          windows: [
+            {
+              id: '1',
+              index: 1,
+              name: 'alpha',
+              path: '/tmp/alpha',
+              activity: 0,
+              command: 'claude',
+            },
+          ],
+        },
+      ],
+      1
+    )
+
+    const captures = new Map<string, ReturnType<typeof makePaneCapture>[]>([
+      [
+        `${sessionName}:1`,
+        [
+          makePaneCapture(
+            [
+              'Output line',
+              '89% context left · ? for shortcuts',
+              '1 background terminal running · /ps to view',
+            ].join('\n'),
+            120,
+            40
+          ),
+          makePaneCapture(
+            ['Output line', '88% context left · ? for shortcuts'].join('\n'),
+            80,
+            24
+          ),
+        ],
+      ],
+    ])
+
+    const capturePaneContent = (tmuxWindow: string) => {
+      const sequence = captures.get(tmuxWindow) ?? []
+      const next = sequence.shift() ?? null
+      captures.set(tmuxWindow, sequence)
+      return next
+    }
+
+    let now = 1700000000000
+    const manager = new SessionManager(sessionName, {
+      runTmux: runner.runTmux,
+      capturePaneContent,
+      now: () => now,
+    })
+
+    const originalPrefixes = config.discoverPrefixes
+    config.discoverPrefixes = []
+    try {
+      const first = manager.listWindows()[0]
+      now += 60000
+      const second = manager.listWindows()[0]
+
+      expect(first?.status).toBe('waiting')
+      expect(second?.status).toBe('waiting')
+      expect(first?.lastActivity).toBe(second?.lastActivity)
+    } finally {
+      config.discoverPrefixes = originalPrefixes
+    }
+  })
+
+  test('listWindows returns permission for prompt content', () => {
+    const sessionName = 'agentboard-permission'
+    const runner = createTmuxRunner(
+      [
+        {
+          name: sessionName,
+          windows: [
+            {
+              id: '1',
+              index: 1,
+              name: 'alpha',
+              path: '/tmp/alpha',
+              activity: 0,
+              command: 'claude',
+            },
+          ],
+        },
+      ],
+      1
+    )
+
+    const captures = new Map<string, ReturnType<typeof makePaneCapture>[]>([
+      [
+        `${sessionName}:1`,
+        [
+          makePaneCapture('Do you want to proceed?\n1. Yes\n2. No', 120, 40),
+          makePaneCapture('Do you want to proceed?\n1. Yes\n2. No', 80, 24),
+        ],
+      ],
+    ])
+
+    const capturePaneContent = (tmuxWindow: string) => {
+      const sequence = captures.get(tmuxWindow) ?? []
+      const next = sequence.shift() ?? null
+      captures.set(tmuxWindow, sequence)
+      return next
+    }
+
+    let now = 1700000000000
+    const manager = new SessionManager(sessionName, {
+      runTmux: runner.runTmux,
+      capturePaneContent,
+      now: () => now,
+    })
+
+    const originalPrefixes = config.discoverPrefixes
+    config.discoverPrefixes = []
+    try {
+      const first = manager.listWindows()[0]
+      now += 60000
+      const second = manager.listWindows()[0]
+
+      expect(first?.status).toBe('permission')
+      expect(second?.status).toBe('permission')
     } finally {
       config.discoverPrefixes = originalPrefixes
     }
@@ -230,7 +451,7 @@ describe('SessionManager', () => {
       const sequence = contentSequences.get(tmuxWindow) ?? ['']
       const next = sequence.shift() ?? ''
       contentSequences.set(tmuxWindow, sequence)
-      return next
+      return makePaneCapture(next)
     }
 
     const manager = new SessionManager(managedSession, {
@@ -257,6 +478,139 @@ describe('SessionManager', () => {
     }
   })
 
+  test('listWindows discovers external sessions when prefixes are unset', () => {
+    const managedSession = 'agentboard'
+    const externalSession = 'work'
+    const wsSession = `${managedSession}-ws-orphan`
+    const runner = createTmuxRunner(
+      [
+        {
+          name: managedSession,
+          windows: [
+            {
+              id: '1',
+              index: 1,
+              name: 'alpha',
+              path: '/tmp/alpha',
+              activity: 0,
+              command: 'claude',
+            },
+          ],
+        },
+        {
+          name: externalSession,
+          windows: [
+            {
+              id: '2',
+              index: 2,
+              name: 'bravo',
+              path: '/tmp/bravo',
+              activity: 0,
+              command: 'codex',
+            },
+          ],
+        },
+        {
+          name: wsSession,
+          windows: [
+            {
+              id: '9',
+              index: 9,
+              name: 'ws',
+              path: '/tmp/ws',
+              activity: 0,
+              command: '',
+            },
+          ],
+        },
+      ],
+      1
+    )
+
+    const manager = new SessionManager(managedSession, {
+      runTmux: runner.runTmux,
+      capturePaneContent: () => makePaneCapture(''),
+      now: () => 1700000000000,
+    })
+
+    const originalPrefixes = config.discoverPrefixes
+    config.discoverPrefixes = []
+    try {
+      const sessions = manager.listWindows()
+      const managed = sessions.find(
+        (session) => session.tmuxWindow === `${managedSession}:1`
+      )
+      const external = sessions.find(
+        (session) => session.tmuxWindow === `${externalSession}:2`
+      )
+      const ws = sessions.find(
+        (session) => session.tmuxWindow === `${wsSession}:9`
+      )
+
+      expect(managed?.source).toBe('managed')
+      expect(external?.source).toBe('external')
+      expect(ws).toBeUndefined()
+    } finally {
+      config.discoverPrefixes = originalPrefixes
+    }
+  })
+
+  test('listWindows falls back when tmux format keys are missing', () => {
+    const sessionName = 'agentboard-format-fallback'
+    const calls: string[][] = []
+
+    const runTmux = (args: string[]) => {
+      calls.push(args)
+      const command = args[0]
+
+      if (command === 'has-session') {
+        return ''
+      }
+
+      if (command === 'list-sessions') {
+        return sessionName
+      }
+
+      if (command === 'list-windows') {
+        const format = args[4] ?? ''
+        if (
+          format.includes('window_creation_time') ||
+          format.includes('pane_start_command')
+        ) {
+          throw new Error('unknown format: window_creation_time')
+        }
+        return '1\talpha\t/tmp/alpha\t1700000000\t1700000000\tclaude'
+      }
+
+      throw new Error(`Unhandled tmux command: ${args.join(' ')}`)
+    }
+
+    const manager = new SessionManager(sessionName, {
+      runTmux,
+      capturePaneContent: () => null,
+      now: () => 1700000000000,
+    })
+
+    const sessions = manager.listWindows()
+
+    expect(sessions).toHaveLength(1)
+    expect(sessions[0]?.command).toBe('claude')
+    expect(
+      calls.some(
+        (call) =>
+          call[0] === 'list-windows' &&
+          String(call[4]).includes('window_creation_time')
+      )
+    ).toBe(true)
+    expect(
+      calls.some(
+        (call) =>
+          call[0] === 'list-windows' &&
+          String(call[4]).includes('pane_current_command')
+      )
+    ).toBe(true)
+  })
+
   test('createWindow normalizes name and picks next index', () => {
     const sessionName = 'agentboard'
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentboard-'))
@@ -281,7 +635,7 @@ describe('SessionManager', () => {
 
     const manager = new SessionManager(sessionName, {
       runTmux: runner.runTmux,
-      capturePaneContent: () => '',
+      capturePaneContent: () => makePaneCapture(''),
       now: () => 1700000000000,
     })
 
@@ -309,7 +663,7 @@ describe('SessionManager', () => {
 
     const manager = new SessionManager(sessionName, {
       runTmux: runner.runTmux,
-      capturePaneContent: () => '',
+      capturePaneContent: () => makePaneCapture(''),
       now: () => 1700000000000,
     })
 
@@ -355,7 +709,7 @@ describe('SessionManager', () => {
 
     const manager = new SessionManager(sessionName, {
       runTmux: runner.runTmux,
-      capturePaneContent: () => '',
+      capturePaneContent: () => makePaneCapture(''),
       now: () => 1700000000000,
     })
 
@@ -392,7 +746,7 @@ describe('SessionManager', () => {
 
     const manager = new SessionManager(sessionName, {
       runTmux: runner.runTmux,
-      capturePaneContent: () => '',
+      capturePaneContent: () => makePaneCapture(''),
       now: () => 1700000000000,
     })
 
@@ -430,7 +784,7 @@ describe('SessionManager', () => {
 
     const manager = new SessionManager(sessionName, {
       runTmux: runner.runTmux,
-      capturePaneContent: () => '',
+      capturePaneContent: () => makePaneCapture(''),
     })
 
     manager.killWindow(`${sessionName}:1`)
@@ -461,12 +815,21 @@ describe('SessionManager', () => {
 
     const originalPrefixes = config.discoverPrefixes
     config.discoverPrefixes = []
-    bunAny.spawnSync = () =>
-      ({
+    bunAny.spawnSync = (args) => {
+      const command = Array.isArray(args) ? args[1] : ''
+      if (command === 'display-message') {
+        return {
+          exitCode: 0,
+          stdout: Buffer.from('80\t24'),
+          stderr: Buffer.from(''),
+        } as ReturnType<typeof Bun.spawnSync>
+      }
+      return {
         exitCode: 0,
         stdout: Buffer.from('content'),
         stderr: Buffer.from(''),
-      }) as ReturnType<typeof Bun.spawnSync>
+      } as ReturnType<typeof Bun.spawnSync>
+    }
 
     try {
       const manager = new SessionManager(sessionName, {
@@ -563,6 +926,52 @@ describe('SessionManager', () => {
       expect(sessions[0]?.status).toBe('unknown')
     } finally {
       bunAny.spawnSync = originalSpawnSync
+      config.discoverPrefixes = originalPrefixes
+    }
+  })
+
+  test('listWindows detects agent type from commands with flags', () => {
+    const sessionName = 'agentboard-agent-type'
+    const runner = createTmuxRunner(
+      [
+        {
+          name: sessionName,
+          windows: [
+            { id: '1', index: 1, name: 'a', path: '/tmp', activity: 0, command: 'codex --search' },
+            { id: '2', index: 2, name: 'b', path: '/tmp', activity: 0, command: 'claude --help' },
+            { id: '3', index: 3, name: 'c', path: '/tmp', activity: 0, command: '/usr/local/bin/codex' },
+            { id: '4', index: 4, name: 'd', path: '/tmp', activity: 0, command: 'npx codex' },
+            { id: '5', index: 5, name: 'e', path: '/tmp', activity: 0, command: 'ENV_VAR=1 claude' },
+            { id: '6', index: 6, name: 'f', path: '/tmp', activity: 0, command: 'bash' },
+            { id: '7', index: 7, name: 'g', path: '/tmp', activity: 0, command: '"codex --search"' },
+            { id: '8', index: 8, name: 'h', path: '/tmp', activity: 0, command: "'claude --dangerously-skip-permissions'" },
+          ],
+        },
+      ],
+      1
+    )
+
+    const manager = new SessionManager(sessionName, {
+      runTmux: runner.runTmux,
+      capturePaneContent: () => makePaneCapture(''),
+      now: () => 1700000000000,
+    })
+
+    const originalPrefixes = config.discoverPrefixes
+    config.discoverPrefixes = []
+    try {
+      const sessions = manager.listWindows()
+      const byName = (name: string) => sessions.find((s) => s.name === name)
+
+      expect(byName('a')?.agentType).toBe('codex')
+      expect(byName('b')?.agentType).toBe('claude')
+      expect(byName('c')?.agentType).toBe('codex')
+      expect(byName('d')?.agentType).toBe('codex')
+      expect(byName('e')?.agentType).toBe('claude')
+      expect(byName('f')?.agentType).toBeUndefined()
+      expect(byName('g')?.agentType).toBe('codex')
+      expect(byName('h')?.agentType).toBe('claude')
+    } finally {
       config.discoverPrefixes = originalPrefixes
     }
   })

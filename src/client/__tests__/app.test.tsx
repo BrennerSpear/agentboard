@@ -39,6 +39,7 @@ class TerminalMock {
   onData() {}
   onScroll() {}
   attachCustomKeyEventHandler() { return true }
+  attachCustomWheelEventHandler() { return true }
   write() {}
   scrollToBottom() {}
   focus() {}

@@ -1,8 +1,6 @@
 import { afterEach, describe, expect, test } from 'bun:test'
 import TestRenderer, { act } from 'react-test-renderer'
-import NewSessionModal, {
-  resolveProjectPath,
-} from '../components/NewSessionModal'
+import NewSessionModal from '../components/NewSessionModal'
 import { DEFAULT_PRESETS } from '../stores/settingsStore'
 
 const globalAny = globalThis as typeof globalThis & {
@@ -42,42 +40,6 @@ function setupDom() {
   return { keyHandlers }
 }
 
-describe('NewSessionModal helpers', () => {
-  test('resolves project paths with base directories', () => {
-    const resolvedBase = resolveProjectPath({
-      value: ' ',
-      activeProjectPath: ' /active ',
-      lastProjectPath: '/last',
-      defaultProjectDir: '/default',
-    })
-    expect(resolvedBase).toBe('/active')
-
-    const resolvedRelative = resolveProjectPath({
-      value: 'repo',
-      activeProjectPath: undefined,
-      lastProjectPath: '/base/',
-      defaultProjectDir: '/default',
-    })
-    expect(resolvedRelative).toBe('/base/repo')
-
-    const resolvedAbsolute = resolveProjectPath({
-      value: '/abs/path',
-      activeProjectPath: undefined,
-      lastProjectPath: null,
-      defaultProjectDir: '/default',
-    })
-    expect(resolvedAbsolute).toBe('/abs/path')
-
-    const resolvedWindows = resolveProjectPath({
-      value: 'C:\\work\\app',
-      activeProjectPath: undefined,
-      lastProjectPath: null,
-      defaultProjectDir: '/default',
-    })
-    expect(resolvedWindows).toBe('C:\\work\\app')
-  })
-})
-
 describe('NewSessionModal component', () => {
   test('submits resolved values and closes', () => {
     setupDom()
@@ -110,9 +72,10 @@ describe('NewSessionModal component', () => {
       )
     })
 
+    // With new field order: modifiers/command (index 0), project path (index 1), name (index 2)
     const inputs = renderer.root.findAllByType('input')
-    const projectInput = inputs[0]
-    const nameInput = inputs[1]
+    const projectInput = inputs[1]
+    const nameInput = inputs[2]
 
     act(() => {
       projectInput.props.onChange({ target: { value: 'repo' } })
@@ -130,7 +93,8 @@ describe('NewSessionModal component', () => {
       customButton.props.onClick()
     })
 
-    const commandInput = renderer.root.findAllByType('input')[2]
+    // Custom command input is now at index 0 (first in the form)
+    const commandInput = renderer.root.findAllByType('input')[0]
 
     act(() => {
       commandInput.props.onChange({ target: { value: ' bun run dev ' } })
@@ -143,7 +107,7 @@ describe('NewSessionModal component', () => {
     })
 
     expect(created).toEqual([
-      { path: '/active/repo', name: 'Alpha', command: 'bun run dev' },
+      { path: 'repo', name: 'Alpha', command: 'bun run dev' },
     ])
     expect(closed).toBe(1)
 
@@ -219,9 +183,9 @@ describe('NewSessionModal component', () => {
       )
     })
 
-    // Find the modifiers input (third input after project path and name)
+    // Find the modifiers input (first input, now that Command is moved up)
     const inputs = renderer.root.findAllByType('input')
-    const modifiersInput = inputs[2]
+    const modifiersInput = inputs[0]
 
     act(() => {
       modifiersInput.props.onChange({ target: { value: '--model opus' } })

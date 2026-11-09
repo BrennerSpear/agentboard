@@ -7,8 +7,12 @@ import { config } from './config'
 import { ensureTmux } from './prerequisites'
 import { SessionManager } from './SessionManager'
 import { SessionRegistry } from './SessionRegistry'
-import { LegacyTerminalProxy } from './LegacyTerminalProxy'
-import { TerminalProxy, TerminalProxyError } from './TerminalProxy'
+import {
+  createTerminalProxy,
+  resolveTerminalMode,
+  TerminalProxyError,
+} from './terminal'
+import type { ITerminalProxy } from './terminal'
 import { resolveProjectPath } from './paths'
 import type {
   ClientMessage,
@@ -17,6 +21,7 @@ import type {
   DirectoryListing,
   DirectoryErrorResponse,
 } from '../shared/types'
+import { logger } from './logger'
 
 function checkPortAvailable(port: number): void {
   let result: ReturnType<typeof Bun.spawnSync>
@@ -42,8 +47,7 @@ function checkPortAvailable(port: number): void {
       processName = nameResult.stdout?.toString().trim() || 'unknown'
     } catch {
     }
-    console.error(`\nPort ${port} already in use by PID ${pid} (${processName})`)
-    console.error(`Run: kill ${pid}\n`)
+    logger.error('port_in_use', { port, pid, processName })
     process.exit(1)
   }
 }
@@ -72,6 +76,65 @@ function getTailscaleIp(): string | null {
   return null
 }
 
+function pruneOrphanedWsSessions(): void {
+  if (!config.pruneWsSessions) {
+    return
+  }
+
+  const prefix = `${config.tmuxSession}-ws-`
+  if (!prefix) {
+    return
+  }
+
+  let result: ReturnType<typeof Bun.spawnSync>
+  try {
+    result = Bun.spawnSync(
+      ['tmux', 'list-sessions', '-F', '#{session_name}\t#{session_attached}'],
+      {
+        stdout: 'pipe',
+        stderr: 'pipe',
+      }
+    )
+  } catch {
+    return
+  }
+
+  if (result.exitCode !== 0) {
+    return
+  }
+
+  const output = result.stdout?.toString() ?? ''
+  if (!output) {
+    return
+  }
+  const lines = output.split('\n')
+  let pruned = 0
+
+  for (const line of lines) {
+    const trimmed = line.trim()
+    if (!trimmed) continue
+    const [name, attachedRaw] = trimmed.split('\t')
+    if (!name || !name.startsWith(prefix)) continue
+    const attached = Number.parseInt(attachedRaw ?? '', 10)
+    if (Number.isNaN(attached) || attached > 0) continue
+    try {
+      const killResult = Bun.spawnSync(['tmux', 'kill-session', '-t', name], {
+        stdout: 'pipe',
+        stderr: 'pipe',
+      })
+      if (killResult.exitCode === 0) {
+        pruned += 1
+      }
+    } catch {
+      // Ignore kill errors
+    }
+  }
+
+  if (pruned > 0) {
+    logger.info('ws_sessions_pruned', { count: pruned })
+  }
+}
+
 const MAX_FIELD_LENGTH = 4096
 const MAX_DIRECTORY_ENTRIES = 200
 const SESSION_ID_PATTERN = /^[A-Za-z0-9_.:@-]+$/
@@ -88,6 +151,12 @@ function createConnectionId(): string {
 
 checkPortAvailable(config.port)
 ensureTmux()
+pruneOrphanedWsSessions()
+const resolvedTerminalMode = resolveTerminalMode()
+logger.info('terminal_mode_resolved', {
+  configured: config.terminalMode,
+  resolved: resolvedTerminalMode,
+})
 
 const app = new Hono()
 const sessionManager = new SessionManager()
@@ -237,9 +306,12 @@ app.get('/api/directories', async (c) => {
   }
 
   const durationMs = Date.now() - start
-  console.log(
-    `[directories] path="${resolved}" count=${limitedDirectories.length} truncated=${truncated} durationMs=${durationMs}`
-  )
+  logger.debug('directories_request', {
+    path: resolved,
+    count: limitedDirectories.length,
+    truncated,
+    durationMs,
+  })
 
   return c.json(response)
 })
@@ -283,8 +355,7 @@ app.post('/api/paste-image', async (c) => {
 app.use('/*', serveStatic({ root: './dist/client' }))
 
 interface WSData {
-  terminals: Map<string, LegacyTerminalProxy>
-  terminal: TerminalProxy | null
+  terminal: ITerminalProxy | null
   currentSessionId: string | null
   connectionId: string
 }
@@ -295,6 +366,7 @@ const tlsEnabled = config.tlsCert && config.tlsKey
 
 Bun.serve<WSData>({
   port: config.port,
+  hostname: config.hostname,
   ...(tlsEnabled && {
     tls: {
       cert: Bun.file(config.tlsCert),
@@ -307,7 +379,6 @@ Bun.serve<WSData>({
       if (
         server.upgrade(req, {
           data: {
-            terminals: new Map(),
             terminal: null,
             currentSessionId: null,
             connectionId: createConnectionId(),
@@ -325,9 +396,7 @@ Bun.serve<WSData>({
     open(ws) {
       sockets.add(ws)
       send(ws, { type: 'sessions', sessions: registry.getAll() })
-      if (config.persistentClient) {
-        initializePersistentTerminal(ws)
-      }
+      initializePersistentTerminal(ws)
     },
     message(ws, message) {
       handleMessage(ws, message)
@@ -340,7 +409,14 @@ Bun.serve<WSData>({
 })
 
 const protocol = tlsEnabled ? 'https' : 'http'
-console.log(`Agentboard server running on ${protocol}://localhost:${config.port}`)
+const displayHost = config.hostname === '0.0.0.0' ? 'localhost' : config.hostname
+logger.info('server_started', {
+  url: `${protocol}://${displayHost}:${config.port}`,
+  tailscaleUrl: config.hostname === '0.0.0.0' ? (() => {
+    const tsIp = getTailscaleIp()
+    return tsIp ? `${protocol}://${tsIp}:${config.port}` : null
+  })() : null,
+})
 
 // Cleanup all terminals on server shutdown
 function cleanupAllTerminals() {
@@ -360,19 +436,11 @@ process.on('SIGTERM', () => {
 })
 
 function cleanupTerminals(ws: ServerWebSocket<WSData>) {
-  if (config.persistentClient) {
-    if (ws.data.terminal) {
-      void ws.data.terminal.dispose()
-      ws.data.terminal = null
-    }
-    ws.data.currentSessionId = null
-    return
+  if (ws.data.terminal) {
+    void ws.data.terminal.dispose()
+    ws.data.terminal = null
   }
-
-  for (const terminal of ws.data.terminals.values()) {
-    terminal.dispose()
-  }
-  ws.data.terminals.clear()
+  ws.data.currentSessionId = null
 }
 
 function broadcast(message: ServerMessage) {
@@ -431,42 +499,43 @@ function handleMessage(
       handleRename(message.sessionId, message.newName, ws)
       return
     case 'terminal-attach':
-      if (config.persistentClient) {
-        void attachTerminalPersistent(ws, message)
-      } else {
-        attachTerminalLegacy(ws, message.sessionId)
-      }
+      void attachTerminalPersistent(ws, message)
       return
     case 'terminal-detach':
-      if (config.persistentClient) {
-        detachTerminalPersistent(ws, message.sessionId)
-      } else {
-        detachTerminalLegacy(ws, message.sessionId)
-      }
+      detachTerminalPersistent(ws, message.sessionId)
       return
     case 'terminal-input':
-      if (config.persistentClient) {
-        handleTerminalInputPersistent(ws, message.sessionId, message.data)
-      } else {
-        ws.data.terminals.get(message.sessionId)?.write(message.data)
-      }
+      handleTerminalInputPersistent(ws, message.sessionId, message.data)
       return
     case 'terminal-resize':
-      if (config.persistentClient) {
-        handleTerminalResizePersistent(
-          ws,
-          message.sessionId,
-          message.cols,
-          message.rows
-        )
-      } else {
-        ws.data.terminals
-          .get(message.sessionId)
-          ?.resize(message.cols, message.rows)
-      }
+      handleTerminalResizePersistent(
+        ws,
+        message.sessionId,
+        message.cols,
+        message.rows
+      )
+      return
+    case 'tmux-cancel-copy-mode':
+      // Exit tmux copy-mode when user starts typing after scrolling
+      handleCancelCopyMode(message.sessionId)
       return
     default:
       send(ws, { type: 'error', message: 'Unknown message type' })
+  }
+}
+
+function handleCancelCopyMode(sessionId: string) {
+  const session = registry.get(sessionId)
+  if (!session) return
+
+  try {
+    // Exit tmux copy-mode quietly.
+    Bun.spawnSync(['tmux', 'send-keys', '-X', '-t', session.tmuxWindow, 'cancel'], {
+      stdout: 'pipe',
+      stderr: 'pipe',
+    })
+  } catch {
+    // Ignore errors - copy-mode may not be active
   }
 }
 
@@ -476,7 +545,7 @@ function handleKill(sessionId: string, ws: ServerWebSocket<WSData>) {
     send(ws, { type: 'error', message: 'Session not found' })
     return
   }
-  if (session.source !== 'managed') {
+  if (session.source !== 'managed' && !config.allowKillExternal) {
     send(ws, { type: 'error', message: 'Cannot kill external sessions' })
     return
   }
@@ -516,42 +585,6 @@ function handleRename(
   }
 }
 
-function attachTerminalLegacy(ws: ServerWebSocket<WSData>, sessionId: string) {
-  const session = registry.get(sessionId)
-  if (!session) {
-    send(ws, { type: 'error', message: 'Session not found' })
-    return
-  }
-
-  // Detach ALL existing terminals first - only one terminal at a time
-  for (const [existingId, terminal] of ws.data.terminals) {
-    terminal.dispose()
-    ws.data.terminals.delete(existingId)
-  }
-
-  const terminal = new LegacyTerminalProxy(session.tmuxWindow, {
-    onData: (data) => {
-      send(ws, { type: 'terminal-output', sessionId, data })
-    },
-    onExit: () => {
-      detachTerminalLegacy(ws, sessionId)
-    },
-  })
-
-  terminal.start()
-  ws.data.terminals.set(sessionId, terminal)
-}
-
-function detachTerminalLegacy(ws: ServerWebSocket<WSData>, sessionId: string) {
-  const terminal = ws.data.terminals.get(sessionId)
-  if (!terminal) {
-    return
-  }
-
-  terminal.dispose()
-  ws.data.terminals.delete(sessionId)
-}
-
 function initializePersistentTerminal(ws: ServerWebSocket<WSData>) {
   if (ws.data.terminal) {
     return
@@ -569,10 +602,11 @@ function initializePersistentTerminal(ws: ServerWebSocket<WSData>) {
 function createPersistentTerminal(ws: ServerWebSocket<WSData>) {
   const sessionName = `${config.tmuxSession}-ws-${ws.data.connectionId}`
 
-  const terminal = new TerminalProxy({
+  const terminal = createTerminalProxy({
     connectionId: ws.data.connectionId,
     sessionName,
     baseSession: config.tmuxSession,
+    monitorTargets: config.terminalMonitorTargets,
     onData: (data) => {
       const sessionId = ws.data.currentSessionId
       if (!sessionId) {
@@ -602,7 +636,7 @@ function createPersistentTerminal(ws: ServerWebSocket<WSData>) {
 
 async function ensurePersistentTerminal(
   ws: ServerWebSocket<WSData>
-): Promise<TerminalProxy | null> {
+): Promise<ITerminalProxy | null> {
   if (!ws.data.terminal) {
     ws.data.terminal = createPersistentTerminal(ws)
   }
@@ -649,14 +683,42 @@ async function attachTerminalPersistent(
     terminal.resize(cols, rows)
   }
 
+  // Capture scrollback history BEFORE switching to avoid race with live output
+  const history = captureTmuxHistory(target)
+
   try {
     await terminal.switchTo(target, () => {
       ws.data.currentSessionId = sessionId
+      // Send history in onReady callback, before output suppression is lifted
+      if (history) {
+        send(ws, { type: 'terminal-output', sessionId, data: history })
+      }
     })
     ws.data.currentSessionId = sessionId
     send(ws, { type: 'terminal-ready', sessionId })
   } catch (error) {
     handleTerminalError(ws, sessionId, error, 'ERR_TMUX_SWITCH_FAILED')
+  }
+}
+
+function captureTmuxHistory(target: string): string | null {
+  try {
+    // Capture full scrollback history (-S - means from start, -E - means to end, -J joins wrapped lines)
+    const result = Bun.spawnSync(
+      ['tmux', 'capture-pane', '-t', target, '-p', '-S', '-', '-E', '-', '-J'],
+      { stdout: 'pipe', stderr: 'pipe' }
+    )
+    if (result.exitCode !== 0) {
+      return null
+    }
+    const output = result.stdout.toString()
+    // Only return if there's actual content
+    if (output.trim().length === 0) {
+      return null
+    }
+    return output
+  } catch {
+    return null
   }
 }
 
@@ -688,6 +750,7 @@ function handleTerminalResizePersistent(
   }
   ws.data.terminal?.resize(cols, rows)
 }
+
 
 function sendTerminalError(
   ws: ServerWebSocket<WSData>,

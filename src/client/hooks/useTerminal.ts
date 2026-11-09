@@ -109,6 +109,7 @@ interface UseTerminalOptions {
   subscribe: (listener: (message: ServerMessage) => void) => () => void
   theme: ITheme
   fontSize: number
+  lineHeight: number
   useWebGL: boolean
   onScrollChange?: (isAtBottom: boolean) => void
 }
@@ -120,6 +121,7 @@ export function useTerminal({
   subscribe,
   theme,
   fontSize,
+  lineHeight,
   useWebGL,
   onScrollChange,
 }: UseTerminalOptions) {
@@ -136,6 +138,10 @@ export function useTerminal({
   const resizeTimer = useRef<number | null>(null)
   const scrollTimer = useRef<number | null>(null)
   const fitTimer = useRef<number | null>(null)
+
+  // Wheel event handling for tmux scrollback
+  const wheelAccumRef = useRef<number>(0)
+  const inTmuxCopyModeRef = useRef<boolean>(false)
 
   // Track the currently attached session to prevent race conditions
   const attachedSessionRef = useRef<string | null>(null)
@@ -172,9 +178,15 @@ export function useTerminal({
     if (!terminal || !onScrollChangeRef.current) return
 
     const buffer = terminal.buffer.active
-    const isAtBottom = buffer.viewportY >= buffer.baseY
+    const isAtBottom = !inTmuxCopyModeRef.current && buffer.viewportY >= buffer.baseY
     onScrollChangeRef.current(isAtBottom)
   }, [])
+
+  const setTmuxCopyMode = useCallback((nextValue: boolean) => {
+    if (inTmuxCopyModeRef.current === nextValue) return
+    inTmuxCopyModeRef.current = nextValue
+    checkScrollPosition()
+  }, [checkScrollPosition])
 
   const fitAndResize = useCallback(() => {
     const terminal = terminalRef.current
@@ -207,14 +219,14 @@ export function useTerminal({
 
     // Calculate lineHeight that produces integer cell height for any fontSize
     // This keeps cell sizing stable across fractional line-height rendering
-    const calcLineHeight = (size: number) => Math.round(size * 1.4) / size
-    const computedLineHeight = calcLineHeight(fontSize)
+    const calcLineHeight = (size: number, lh: number) => Math.round(size * lh) / size
+    const computedLineHeight = calcLineHeight(fontSize, lineHeight)
 
     const terminal = new Terminal({
       fontFamily: '"JetBrains Mono", "SF Mono", "Fira Code", monospace',
       fontSize,
       lineHeight: computedLineHeight,
-      scrollback: 5000,
+      scrollback: 0, // Disabled - we use tmux scrollback instead
       cursorBlink: false,
       cursorStyle: 'underline',
       convertEol: true,
@@ -364,13 +376,58 @@ export function useTerminal({
     terminal.onData((data) => {
       const attached = attachedSessionRef.current
       if (attached) {
+        // If we scrolled in tmux copy-mode, exit it before sending input
+        if (inTmuxCopyModeRef.current) {
+          sendMessageRef.current({ type: 'tmux-cancel-copy-mode', sessionId: attached })
+          setTmuxCopyMode(false)
+        }
         sendMessageRef.current({ type: 'terminal-input', sessionId: attached, data })
       }
     })
 
-    // Track scroll position changes
-    terminal.onScroll(() => {
-      checkScrollPosition()
+    // Forward wheel events to tmux for scrollback (like Blink terminal)
+    // This enters tmux copy-mode instead of using xterm.js local scrollback
+    terminal.attachCustomWheelEventHandler((ev) => {
+      const attached = attachedSessionRef.current
+      if (!attached) return true // Let xterm handle it
+
+      // Don't intercept wheel over HTML inputs (like Claude Code's text box)
+      const target = ev.target as HTMLElement | null
+      if (target?.closest('input, textarea, [contenteditable="true"], .xterm-hover')) {
+        return true
+      }
+
+      // If user has active selection, let them scroll to extend it
+      if (terminal.hasSelection()) return true
+
+      // Shift+scroll = horizontal scroll intent, let browser handle
+      if (ev.shiftKey) return true
+
+      // Accumulate wheel delta to avoid spamming on trackpads
+      const STEP = 30
+      wheelAccumRef.current += ev.deltaY
+
+      // Get approximate cell position for SGR mouse event
+      const cols = terminal.cols
+      const rows = terminal.rows
+      const col = Math.floor(cols / 2)
+      const row = Math.floor(rows / 2)
+
+      while (Math.abs(wheelAccumRef.current) >= STEP) {
+        const down = wheelAccumRef.current > 0
+        wheelAccumRef.current += down ? -STEP : STEP
+
+        // SGR mouse wheel: button 64 = scroll up, 65 = scroll down
+        const button = down ? 65 : 64
+        sendMessageRef.current({
+          type: 'terminal-input',
+          sessionId: attached,
+          data: `\x1b[<${button};${col};${row}M`
+        })
+      }
+
+      setTmuxCopyMode(true)
+      return false // We handled it, prevent xterm local scroll
     })
 
     terminalRef.current = terminal
@@ -441,14 +498,14 @@ export function useTerminal({
     }
   }, [theme])
 
-  // Update font size (and lineHeight to maintain integer cell height)
+  // Update font size and lineHeight (maintaining integer cell height)
   useEffect(() => {
     const terminal = terminalRef.current
     const fitAddon = fitAddonRef.current
     if (terminal && fitAddon) {
       terminal.options.fontSize = fontSize
       // Recalculate lineHeight for integer cell height
-      terminal.options.lineHeight = Math.round(fontSize * 1.4) / fontSize
+      terminal.options.lineHeight = Math.round(fontSize * lineHeight) / fontSize
       fitAddon.fit()
       // Notify server of new dimensions
       const attached = attachedSessionRef.current
@@ -461,7 +518,7 @@ export function useTerminal({
         })
       }
     }
-  }, [fontSize])
+  }, [fontSize, lineHeight])
 
   // Handle WebGL toggle at runtime
   useEffect(() => {
@@ -653,5 +710,7 @@ export function useTerminal({
     searchAddonRef,
     serializeAddonRef,
     progressAddonRef,
+    inTmuxCopyModeRef,
+    setTmuxCopyMode,
   }
 }

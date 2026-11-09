@@ -14,37 +14,6 @@ interface NewSessionModalProps {
   activeProjectPath?: string
 }
 
-export function resolveProjectPath({
-  value,
-  activeProjectPath,
-  lastProjectPath,
-  defaultProjectDir,
-}: {
-  value: string
-  activeProjectPath?: string
-  lastProjectPath?: string | null
-  defaultProjectDir: string
-}): string {
-  const trimmedValue = value.trim()
-  const baseDir =
-    activeProjectPath?.trim() || lastProjectPath || defaultProjectDir.trim()
-  if (!trimmedValue) {
-    return baseDir
-  }
-
-  const isAbsolute =
-    trimmedValue.startsWith('/') ||
-    trimmedValue.startsWith('~') ||
-    /^[A-Za-z]:[\\/]/.test(trimmedValue)
-
-  if (isAbsolute || !baseDir) {
-    return trimmedValue
-  }
-
-  const base = baseDir.replace(/[\\/]+$/, '')
-  return `${base}/${trimmedValue}`
-}
-
 export default function NewSessionModal({
   isOpen,
   onClose,
@@ -64,6 +33,8 @@ export default function NewSessionModal({
   const [isCustomMode, setIsCustomMode] = useState(false)
   const [showBrowser, setShowBrowser] = useState(false)
   const formRef = useRef<HTMLFormElement>(null)
+  const projectPathRef = useRef<HTMLInputElement>(null)
+  const defaultButtonRef = useRef<HTMLButtonElement>(null)
 
   // Get current preset
   const selectedPreset = selectedPresetId
@@ -97,6 +68,14 @@ export default function NewSessionModal({
       }, 300)
       return
     }
+    // Disable terminal textarea when modal opens to prevent keyboard capture
+    if (typeof document !== 'undefined') {
+      const textarea = document.querySelector('.xterm-helper-textarea') as HTMLTextAreaElement | null
+      if (textarea && typeof textarea.setAttribute === 'function') {
+        if (typeof textarea.blur === 'function') textarea.blur()
+        textarea.setAttribute('disabled', 'true')
+      }
+    }
     // Initialize state when opening
     const basePath =
       activeProjectPath?.trim() || lastProjectPath || defaultProjectDir
@@ -116,10 +95,19 @@ export default function NewSessionModal({
       setIsCustomMode(true)
     }
     setCustomCommand('')
+    // Focus default button and scroll project path after DOM update
+    setTimeout(() => {
+      defaultButtonRef.current?.focus()
+      if (projectPathRef.current) {
+        const input = projectPathRef.current
+        input.scrollLeft = input.scrollWidth
+      }
+    }, 50)
   }, [activeProjectPath, commandPresets, defaultPresetId, defaultProjectDir, isOpen, lastProjectPath])
 
   useEffect(() => {
     if (!isOpen) return
+    if (typeof window === 'undefined' || typeof window.addEventListener !== 'function') return
 
     const getFocusableElements = () => {
       if (!formRef.current) return []
@@ -132,18 +120,21 @@ export default function NewSessionModal({
       if (showBrowser) return
 
       if (e.key === 'Escape') {
+        if (typeof e.stopPropagation === 'function') e.stopPropagation()
         onClose()
         return
       }
 
       if (e.key === 'Enter' && document.activeElement?.tagName !== 'INPUT') {
         e.preventDefault()
+        if (typeof e.stopPropagation === 'function') e.stopPropagation()
         formRef.current?.requestSubmit()
         return
       }
 
       if (e.key === 'Tab') {
         e.preventDefault()
+        if (typeof e.stopPropagation === 'function') e.stopPropagation()
         const focusableElements = getFocusableElements()
         if (focusableElements.length === 0) return
 
@@ -151,7 +142,10 @@ export default function NewSessionModal({
         const currentIndex = focusableElements.indexOf(activeEl)
 
         let nextIndex: number
-        if (e.shiftKey) {
+        if (currentIndex === -1) {
+          // If current element not in list, start from beginning or end
+          nextIndex = e.shiftKey ? focusableElements.length - 1 : 0
+        } else if (e.shiftKey) {
           nextIndex = currentIndex <= 0 ? focusableElements.length - 1 : currentIndex - 1
         } else {
           nextIndex = currentIndex >= focusableElements.length - 1 ? 0 : currentIndex + 1
@@ -184,13 +178,8 @@ export default function NewSessionModal({
 
   const handleSubmit = (event: React.FormEvent) => {
     event.preventDefault()
-    const resolvedPath = resolveProjectPath({
-      value: projectPath,
-      activeProjectPath,
-      lastProjectPath,
-      defaultProjectDir,
-    })
-    if (!resolvedPath) {
+    const trimmedPath = projectPath.trim()
+    if (!trimmedPath) {
       return
     }
 
@@ -209,7 +198,7 @@ export default function NewSessionModal({
     }
 
     onCreate(
-      resolvedPath,
+      trimmedPath,
       name.trim() || undefined,
       finalCommand || undefined
     )
@@ -222,12 +211,7 @@ export default function NewSessionModal({
     { id: 'custom', label: 'Custom', isCustom: true },
   ]
 
-  const browserInitialPath = resolveProjectPath({
-    value: projectPath,
-    activeProjectPath,
-    lastProjectPath,
-    defaultProjectDir,
-  }) || '~'
+  const browserInitialPath = projectPath.trim() || '~'
 
   return (
     <div
@@ -247,54 +231,8 @@ export default function NewSessionModal({
         <h2 id="new-session-title" className="text-sm font-semibold uppercase tracking-wider text-primary text-balance">
           New Session
         </h2>
-        <p className="mt-2 text-xs text-muted text-pretty">
-          Enter an absolute project path or a folder name. Relative paths use
-          the base directory.
-        </p>
-        {(activeProjectPath?.trim() || lastProjectPath || defaultProjectDir.trim()) ? (
-          <p className="mt-1 text-xs text-muted">
-            Base: {activeProjectPath?.trim() || lastProjectPath || defaultProjectDir.trim()}
-          </p>
-        ) : null}
 
-        <div className="mt-5 space-y-4">
-          <div>
-            <label className="mb-1.5 block text-xs text-secondary">
-              Project Path
-            </label>
-            <div className="flex gap-2">
-              <input
-                value={projectPath}
-                onChange={(event) => setProjectPath(event.target.value)}
-                placeholder={
-                  activeProjectPath ||
-                  lastProjectPath ||
-                  defaultProjectDir ||
-                  '/Users/you/code/my-project'
-                }
-                className="input flex-1"
-                autoFocus
-              />
-              <button
-                type="button"
-                className="btn"
-                onClick={() => setShowBrowser(true)}
-              >
-                Browse
-              </button>
-            </div>
-          </div>
-          <div>
-            <label className="mb-1.5 block text-xs text-secondary">
-              Display Name
-            </label>
-            <input
-              value={name}
-              onChange={(event) => setName(event.target.value)}
-              placeholder="auto-generated"
-              className="input placeholder:italic"
-            />
-          </div>
+        <div className="mt-4 space-y-4">
           <div>
             <label className="mb-1.5 block text-xs text-secondary">
               Command
@@ -305,6 +243,7 @@ export default function NewSessionModal({
                 return (
                   <button
                     key={option.id}
+                    ref={isActive ? defaultButtonRef : undefined}
                     type="button"
                     role="radio"
                     aria-checked={isActive}
@@ -337,7 +276,7 @@ export default function NewSessionModal({
                       const buttons = container?.querySelectorAll<HTMLButtonElement>('[role="radio"]')
                       buttons?.[newIndex]?.focus()
                     }}
-                    className={`btn text-xs ${isActive ? 'btn-primary' : ''}`}
+                    className={`btn text-xs focus:outline-none focus:ring-2 focus:ring-primary ${isActive ? 'btn-primary' : ''}`}
                   >
                     {option.label}
                   </button>
@@ -352,7 +291,7 @@ export default function NewSessionModal({
                   value={modifiers}
                   onChange={(event) => setModifiers(event.target.value)}
                   placeholder="Modifiers (e.g., --model opus)"
-                  className="input font-mono text-sm"
+                  className="input font-mono text-xs"
                 />
               </div>
             )}
@@ -363,7 +302,7 @@ export default function NewSessionModal({
                 value={customCommand}
                 onChange={(event) => setCustomCommand(event.target.value)}
                 placeholder="Enter custom command..."
-                className="input mt-2 font-mono"
+                className="input mt-2 font-mono text-xs"
               />
             )}
 
@@ -373,6 +312,43 @@ export default function NewSessionModal({
                 Will run: {previewCommand}
               </p>
             )}
+          </div>
+          <div>
+            <label className="mb-1.5 block text-xs text-secondary">
+              Project Path
+            </label>
+            <div className="flex gap-2">
+              <input
+                ref={projectPathRef}
+                value={projectPath}
+                onChange={(event) => setProjectPath(event.target.value)}
+                placeholder={
+                  activeProjectPath ||
+                  lastProjectPath ||
+                  defaultProjectDir ||
+                  '/Users/you/code/my-project'
+                }
+                className="input flex-1 text-sm"
+              />
+              <button
+                type="button"
+                className="btn"
+                onClick={() => setShowBrowser(true)}
+              >
+                Browse
+              </button>
+            </div>
+          </div>
+          <div>
+            <label className="mb-1.5 block text-xs text-secondary">
+              Display Name
+            </label>
+            <input
+              value={name}
+              onChange={(event) => setName(event.target.value)}
+              placeholder="auto-generated"
+              className="input text-sm placeholder:italic"
+            />
           </div>
         </div>
 

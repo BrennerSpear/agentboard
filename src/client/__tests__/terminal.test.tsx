@@ -25,7 +25,7 @@ class TerminalMock {
   buffer = { active: { viewportY: 0, baseY: 0 } }
   element: HTMLElement | null = null
   scrollCalls = 0
-  private scrollHandler?: () => void
+  private wheelHandler?: (event: WheelEvent) => boolean
 
   constructor() {
     TerminalMock.instances.push(this)
@@ -41,11 +41,12 @@ class TerminalMock {
 
   onData() {}
 
-  onScroll(handler: () => void) {
-    this.scrollHandler = handler
+  attachCustomKeyEventHandler() {
+    return true
   }
 
-  attachCustomKeyEventHandler() {
+  attachCustomWheelEventHandler(handler: (event: WheelEvent) => boolean) {
+    this.wheelHandler = handler
     return true
   }
 
@@ -69,8 +70,8 @@ class TerminalMock {
 
   refresh() {}
 
-  emitScroll() {
-    this.scrollHandler?.()
+  emitWheel(event: WheelEvent) {
+    return this.wheelHandler?.(event)
   }
 }
 
@@ -226,13 +227,14 @@ describe('Terminal', () => {
     const { createNodeMock } = createContainerMock()
     let renderer!: TestRenderer.ReactTestRenderer
 
+    const sentMessages: unknown[] = []
     act(() => {
       renderer = TestRenderer.create(
         <Terminal
           session={baseSession}
           sessions={[baseSession]}
           connectionStatus="connected"
-          sendMessage={() => {}}
+          sendMessage={(msg) => { sentMessages.push(msg) }}
           subscribe={() => () => {}}
           onClose={() => {}}
           onSelectSession={() => {}}
@@ -254,11 +256,8 @@ describe('Terminal', () => {
       throw new Error('Expected terminal instance')
     }
 
-    terminalInstance.buffer.active.baseY = 10
-    terminalInstance.buffer.active.viewportY = 0
-
     act(() => {
-      terminalInstance.emitScroll()
+      terminalInstance.emitWheel({ deltaY: 30 } as WheelEvent)
     })
 
     const scrollButton = renderer.root.findAllByType('button').find(
@@ -268,13 +267,18 @@ describe('Terminal', () => {
       throw new Error('Expected scroll button')
     }
 
-    const initialScrolls = terminalInstance.scrollCalls
+    const initialMessageCount = sentMessages.length
 
     act(() => {
       scrollButton.props.onClick()
     })
 
-    expect(terminalInstance.scrollCalls).toBe(initialScrolls + 1)
+    // Scroll to bottom now sends tmux-cancel-copy-mode to exit copy-mode
+    expect(sentMessages.length).toBe(initialMessageCount + 1)
+    expect(sentMessages[sentMessages.length - 1]).toEqual({
+      type: 'tmux-cancel-copy-mode',
+      sessionId: baseSession.id,
+    })
 
     const moreButton = renderer.root.findByProps({ title: 'More options' })
 

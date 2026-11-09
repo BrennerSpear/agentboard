@@ -5,6 +5,7 @@
  */
 
 import { useState, useRef, useEffect } from 'react'
+import type { TouchEvent as ReactTouchEvent } from 'react'
 import type { Session } from '@shared/types'
 import { CornerDownLeftIcon } from '@untitledui-icons/react/line'
 import DPad from './DPad'
@@ -25,6 +26,7 @@ interface TerminalControlsProps {
   hideSessionSwitcher?: boolean
   onRefocus?: () => void
   isKeyboardVisible?: () => boolean
+  onEnterTextMode?: () => void
 }
 
 interface ControlKey {
@@ -47,6 +49,22 @@ const PasteIcon = (
   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2" />
     <rect x="8" y="2" width="8" height="4" rx="1" ry="1" />
+  </svg>
+)
+
+// Keyboard icon
+const KeyboardIcon = (
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <rect x="2" y="4" width="20" height="16" rx="2" ry="2" />
+    <line x1="6" y1="8" x2="6" y2="8" />
+    <line x1="10" y1="8" x2="10" y2="8" />
+    <line x1="14" y1="8" x2="14" y2="8" />
+    <line x1="18" y1="8" x2="18" y2="8" />
+    <line x1="6" y1="12" x2="6" y2="12" />
+    <line x1="10" y1="12" x2="10" y2="12" />
+    <line x1="14" y1="12" x2="14" y2="12" />
+    <line x1="18" y1="12" x2="18" y2="12" />
+    <line x1="7" y1="16" x2="17" y2="16" />
   </svg>
 )
 
@@ -83,6 +101,7 @@ export default function TerminalControls({
   hideSessionSwitcher = false,
   onRefocus,
   isKeyboardVisible,
+  onEnterTextMode,
 }: TerminalControlsProps) {
   const [showPasteInput, setShowPasteInput] = useState(false)
   const [pasteValue, setPasteValue] = useState('')
@@ -90,12 +109,38 @@ export default function TerminalControls({
   const [ctrlActive, setCtrlActive] = useState(false)
   const pasteInputRef = useRef<HTMLInputElement>(null)
   const pasteZoneRef = useRef<HTMLDivElement>(null)
+  const lastTouchTimeRef = useRef(0)
+  const controlsRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     if (showPasteInput && pasteInputRef.current) {
       pasteInputRef.current.focus()
     }
   }, [showPasteInput])
+
+  useEffect(() => {
+    const controls = controlsRef.current
+    if (!controls) return
+
+    const handleTouchStartCapture = (event: TouchEvent) => {
+      if (disabled) return
+      if (!controls.contains(event.target as Node)) return
+      if (isKeyboardVisible?.()) {
+        event.preventDefault()
+      }
+    }
+
+    controls.addEventListener('touchstart', handleTouchStartCapture, {
+      passive: false,
+      capture: true,
+    })
+
+    return () => {
+      controls.removeEventListener('touchstart', handleTouchStartCapture, {
+        capture: true,
+      })
+    }
+  }, [disabled, isKeyboardVisible])
 
   // Handle paste events in the modal (for images via native paste gesture)
   useEffect(() => {
@@ -264,11 +309,44 @@ export default function TerminalControls({
     onSelectSession(sessionId)
   }
 
+  const handleKeyboardPress = () => {
+    if (disabled) return
+    triggerHaptic()
+    // Toggle: if keyboard visible, hide it; otherwise show it
+    if (isKeyboardVisible?.()) {
+      // Blur to hide keyboard
+      if (document.activeElement instanceof HTMLElement) {
+        document.activeElement.blur()
+      }
+    } else {
+      onEnterTextMode?.()
+    }
+  }
+
   // Only show session row if there are multiple sessions and not hidden
   const showSessionRow = sessions.length > 1 && !hideSessionSwitcher
 
+  const handleTouchAction = (handler: () => void) => (e: ReactTouchEvent) => {
+    if (disabled) return
+    e.preventDefault()
+    e.stopPropagation()
+    lastTouchTimeRef.current = Date.now()
+    handler()
+  }
+
+  const handleClickAction = (handler: () => void) => () => {
+    if (disabled) return
+    if (Date.now() - lastTouchTimeRef.current < 700) {
+      return
+    }
+    handler()
+  }
+
   return (
-    <div className="terminal-controls flex flex-col gap-1.5 px-2 py-2.5 bg-elevated border-t border-border md:hidden">
+    <div
+      ref={controlsRef}
+      className="terminal-controls flex flex-col gap-1.5 px-2 py-2.5 bg-elevated border-t border-border md:hidden"
+    >
       {/* Session switcher row */}
       {showSessionRow && (
         <div className="relative -mx-2">
@@ -325,8 +403,8 @@ export default function TerminalControls({
             ${disabled ? 'opacity-50' : ''}
           `}
           onMouseDown={(e) => e.preventDefault()}
-          onTouchStart={(e) => e.preventDefault()}
-          onClick={handleCtrlToggle}
+          onTouchStart={handleTouchAction(handleCtrlToggle)}
+          onClick={handleClickAction(handleCtrlToggle)}
           disabled={disabled}
         >
           ctrl
@@ -350,8 +428,8 @@ export default function TerminalControls({
               ${disabled ? 'opacity-50' : ''}
             `}
             onMouseDown={(e) => e.preventDefault()}
-            onTouchStart={(e) => e.preventDefault()}
-            onClick={() => handlePress(control.key)}
+            onTouchStart={handleTouchAction(() => handlePress(control.key))}
+            onClick={handleClickAction(() => handlePress(control.key))}
             disabled={disabled}
           >
             {control.label}
@@ -394,8 +472,8 @@ export default function TerminalControls({
               ${disabled ? 'opacity-50' : ''}
             `}
             onMouseDown={(e) => e.preventDefault()}
-            onTouchStart={(e) => e.preventDefault()}
-            onClick={() => handlePress(control.key)}
+            onTouchStart={handleTouchAction(() => handlePress(control.key))}
+            onClick={handleClickAction(() => handlePress(control.key))}
             disabled={disabled}
           >
             {control.label}
@@ -418,11 +496,34 @@ export default function TerminalControls({
             ${disabled ? 'opacity-50' : ''}
           `}
           onMouseDown={(e) => e.preventDefault()}
-          onTouchStart={(e) => e.preventDefault()}
-          onClick={handlePasteButtonClick}
+          onTouchStart={handleTouchAction(() => { void handlePasteButtonClick() })}
+          onClick={handleClickAction(() => { void handlePasteButtonClick() })}
           disabled={disabled}
         >
           {PasteIcon}
+        </button>
+        {/* Keyboard button - enter text mode (exit copy-mode and show keyboard) */}
+        <button
+          type="button"
+          aria-label="Show keyboard"
+          className={`
+            terminal-key
+            flex items-center justify-center
+            h-11 min-w-[2.75rem] px-2.5
+            text-sm font-medium
+            bg-surface border border-border rounded-md
+            active:bg-hover active:scale-95
+            transition-transform duration-75
+            select-none touch-manipulation
+            text-secondary
+            ${disabled ? 'opacity-50' : ''}
+          `}
+          onMouseDown={(e) => e.preventDefault()}
+          onTouchStart={handleTouchAction(handleKeyboardPress)}
+          onClick={handleClickAction(handleKeyboardPress)}
+          disabled={disabled}
+        >
+          {KeyboardIcon}
         </button>
       </div>
 

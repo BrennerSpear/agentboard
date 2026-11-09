@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   DEFAULT_PROJECT_DIR,
   MAX_PRESETS,
@@ -44,6 +44,8 @@ export default function SettingsModal({
   )
   const useWebGL = useSettingsStore((state) => state.useWebGL)
   const setUseWebGL = useSettingsStore((state) => state.setUseWebGL)
+  const lineHeight = useSettingsStore((state) => state.lineHeight)
+  const setLineHeight = useSettingsStore((state) => state.setLineHeight)
   const shortcutModifier = useSettingsStore((state) => state.shortcutModifier)
   const setShortcutModifier = useSettingsStore(
     (state) => state.setShortcutModifier
@@ -57,6 +59,7 @@ export default function SettingsModal({
   const [draftSortDirection, setDraftSortDirection] =
     useState<SessionSortDirection>(sessionSortDirection)
   const [draftUseWebGL, setDraftUseWebGL] = useState(useWebGL)
+  const [draftLineHeight, setDraftLineHeight] = useState(lineHeight)
   const [draftShortcutModifier, setDraftShortcutModifier] = useState<
     ShortcutModifier | 'auto'
   >(shortcutModifier)
@@ -67,8 +70,14 @@ export default function SettingsModal({
   const [newBaseCommand, setNewBaseCommand] = useState('')
   const [newModifiers, setNewModifiers] = useState('')
   const [newAgentType, setNewAgentType] = useState<'claude' | 'codex' | ''>('')
+  const reenableTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
+    if (reenableTimeoutRef.current) {
+      clearTimeout(reenableTimeoutRef.current)
+      reenableTimeoutRef.current = null
+    }
+
     if (isOpen) {
       setDraftDir(defaultProjectDir)
       setDraftPresets(commandPresets)
@@ -76,12 +85,41 @@ export default function SettingsModal({
       setDraftSortMode(sessionSortMode)
       setDraftSortDirection(sessionSortDirection)
       setDraftUseWebGL(useWebGL)
+      setDraftLineHeight(lineHeight)
       setDraftShortcutModifier(shortcutModifier)
       setShowAddForm(false)
       setNewLabel('')
       setNewBaseCommand('')
       setNewModifiers('')
       setNewAgentType('')
+      // Disable terminal textarea when modal opens to prevent keyboard capture
+      if (typeof document !== 'undefined') {
+        const textarea = document.querySelector('.xterm-helper-textarea') as HTMLTextAreaElement | null
+        if (textarea && typeof textarea.setAttribute === 'function') {
+          if (typeof textarea.blur === 'function') textarea.blur()
+          textarea.setAttribute('disabled', 'true')
+        }
+      }
+    } else {
+      // Re-enable terminal textarea when modal closes
+      if (typeof document !== 'undefined') {
+        reenableTimeoutRef.current = setTimeout(() => {
+          if (typeof document === 'undefined') {
+            return
+          }
+          const textarea = document.querySelector('.xterm-helper-textarea') as HTMLTextAreaElement | null
+          if (textarea) {
+            textarea.removeAttribute('disabled')
+            textarea.focus()
+          }
+        }, 300)
+      }
+    }
+    return () => {
+      if (reenableTimeoutRef.current) {
+        clearTimeout(reenableTimeoutRef.current)
+        reenableTimeoutRef.current = null
+      }
     }
   }, [
     commandPresets,
@@ -90,9 +128,25 @@ export default function SettingsModal({
     sessionSortMode,
     sessionSortDirection,
     useWebGL,
+    lineHeight,
     shortcutModifier,
     isOpen,
   ])
+
+  // Handle Escape key to close modal
+  useEffect(() => {
+    if (!isOpen) return
+    if (typeof window === 'undefined' || typeof window.addEventListener !== 'function') return
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        if (typeof e.stopPropagation === 'function') e.stopPropagation()
+        onClose()
+      }
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [isOpen, onClose])
 
   if (!isOpen) {
     return null
@@ -108,6 +162,7 @@ export default function SettingsModal({
     setSessionSortMode(draftSortMode)
     setSessionSortDirection(draftSortDirection)
     setUseWebGL(draftUseWebGL)
+    setLineHeight(draftLineHeight)
     setShortcutModifier(draftShortcutModifier)
     onClose({ webglChanged })
   }
@@ -413,6 +468,27 @@ export default function SettingsModal({
                 Terminal will reload when saved
               </p>
             )}
+
+            <div className="mt-4 flex items-center justify-between">
+              <div>
+                <div className="text-sm text-primary">Line Height</div>
+                <div className="text-[10px] text-muted">
+                  Vertical spacing between lines (1.0 = compact, 2.0 = spacious)
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <input
+                  type="range"
+                  min="1.0"
+                  max="2.0"
+                  step="0.1"
+                  value={draftLineHeight}
+                  onChange={(e) => setDraftLineHeight(parseFloat(e.target.value))}
+                  className="w-20 h-1 bg-border rounded-lg appearance-none cursor-pointer accent-accent"
+                />
+                <span className="text-xs text-secondary w-8 text-right">{draftLineHeight.toFixed(1)}</span>
+              </div>
+            </div>
           </div>
 
           <div className="border-t border-border pt-4">

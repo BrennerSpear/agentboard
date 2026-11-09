@@ -1,6 +1,7 @@
 import fs from 'node:fs'
 import { config } from './config'
 import { generateSessionName } from './nameGenerator'
+import { logger } from './logger'
 import { resolveProjectPath } from './paths'
 import type { AgentType, Session, SessionStatus } from '../shared/types'
 
@@ -14,15 +15,28 @@ interface WindowInfo {
 }
 
 type TmuxRunner = (args: string[]) => string
-type CapturePane = (tmuxWindow: string) => string | null
 type NowFn = () => number
 
-// Cache of pane content and last-changed timestamp for change detection
+interface PaneCapture {
+  content: string
+  width: number
+  height: number
+}
+
+type CapturePane = (tmuxWindow: string) => PaneCapture | null
+
+// Cache of pane content, dimensions, and last-changed timestamp for change detection
 interface PaneCache {
   content: string
   lastChanged: number
+  width: number
+  height: number
 }
 const paneContentCache = new Map<string, PaneCache>()
+const WINDOW_LIST_FORMAT =
+  '#{window_id}\t#{window_name}\t#{pane_current_path}\t#{window_activity}\t#{window_creation_time}\t#{pane_start_command}'
+const WINDOW_LIST_FORMAT_FALLBACK =
+  '#{window_id}\t#{window_name}\t#{pane_current_path}\t#{window_activity}\t#{window_activity}\t#{pane_current_command}'
 
 export class SessionManager {
   private sessionName: string
@@ -44,7 +58,7 @@ export class SessionManager {
   ) {
     this.sessionName = sessionName
     this.runTmux = runTmuxOverride ?? runTmux
-    this.capturePaneContent = captureOverride ?? capturePaneContent
+    this.capturePaneContent = captureOverride ?? capturePaneWithDimensions
     this.now = now ?? Date.now
   }
 
@@ -102,11 +116,15 @@ export class SessionManager {
       } while (existingNames.has(baseName))
     }
 
-    const finalCommand = command?.trim() || 'claude'
+    const rawCommand = command?.trim() || 'claude'
     const finalName = this.findAvailableName(baseName, existingNames)
     const nextIndex = this.findNextAvailableWindowIndex()
 
-    this.runTmux([
+    // Wrap command in interactive shell to ensure user's PATH and environment are available
+    // Use -i (interactive) to source rc files like .zshrc/.bashrc which set up nvm, pyenv, etc.
+    // Note: -l (login) alone doesn't source .zshrc - it only sources .zprofile/.zlogin
+    const shellPath = process.env.SHELL || '/bin/bash'
+    const tmuxArgs = [
       'new-window',
       '-t',
       `${this.sessionName}:${nextIndex}`,
@@ -114,8 +132,13 @@ export class SessionManager {
       finalName,
       '-c',
       resolvedPath,
-      finalCommand,
-    ])
+      '--',
+      shellPath,
+      '-i',
+      '-c',
+      rawCommand,
+    ]
+    this.runTmux(tmuxArgs)
 
     const sessions = this.listWindowsForSession(this.sessionName, 'managed')
     const created = sessions.find((session) => session.name === finalName)
@@ -128,6 +151,21 @@ export class SessionManager {
   }
 
   killWindow(tmuxWindow: string): void {
+    // Log window info before killing
+    try {
+      const info = this.runTmux([
+        'display-message',
+        '-t',
+        tmuxWindow,
+        '-p',
+        '#{window_name}\t#{pane_current_path}',
+      ])
+      const [name, path] = info.trim().split('\t')
+      logger.info('window_killed', { tmuxWindow, name, path })
+    } catch {
+      // Window may already be gone, log what we know
+      logger.info('window_killed', { tmuxWindow })
+    }
     this.runTmux(['kill-window', '-t', tmuxWindow])
     paneContentCache.delete(tmuxWindow)
   }
@@ -161,13 +199,18 @@ export class SessionManager {
   }
 
   private listExternalWindows(): Session[] {
-    if (config.discoverPrefixes.length === 0) {
-      return []
-    }
-
-    const sessions = this.listSessions().filter((sessionName) =>
-      config.discoverPrefixes.some((prefix) => sessionName.startsWith(prefix))
+    const wsPrefix = `${this.sessionName}-ws-`
+    const allSessions = this.listSessions().filter(
+      (sessionName) => !sessionName.startsWith(wsPrefix)
     )
+    const sessions =
+      config.discoverPrefixes.length === 0
+        ? allSessions.filter((sessionName) => sessionName !== this.sessionName)
+        : allSessions.filter((sessionName) =>
+            config.discoverPrefixes.some((prefix) =>
+              sessionName.startsWith(prefix)
+            )
+          )
 
     return sessions.flatMap((sessionName) =>
       this.listWindowsForSession(sessionName, 'external')
@@ -190,13 +233,7 @@ export class SessionManager {
     sessionName: string,
     source: Session['source']
   ): Session[] {
-    const output = this.runTmux([
-      'list-windows',
-      '-t',
-      sessionName,
-      '-F',
-      '#{window_id}\t#{window_name}\t#{pane_current_path}\t#{window_activity}\t#{window_creation_time}\t#{pane_start_command}',
-    ])
+    const output = this.listWindowOutput(sessionName)
 
     return output
       .split('\n')
@@ -213,9 +250,11 @@ export class SessionManager {
           this.capturePaneContent,
           this.now
         )
+        // For external sessions, use session name as display name (more meaningful than window name)
+        const displayName = source === 'external' ? sessionName : window.name
         return {
           id: `${sessionName}:${window.id}`,
-          name: window.name,
+          name: displayName,
           tmuxWindow,
           projectPath: window.path,
           status,
@@ -226,6 +265,20 @@ export class SessionManager {
           command: window.command || undefined,
         }
       })
+  }
+
+  private listWindowOutput(sessionName: string): string {
+    const args = ['list-windows', '-t', sessionName, '-F']
+
+    try {
+      return this.runTmux([...args, WINDOW_LIST_FORMAT])
+    } catch (error) {
+      if (!isTmuxFormatError(error)) {
+        throw error
+      }
+    }
+
+    return this.runTmux([...args, WINDOW_LIST_FORMAT_FALLBACK])
   }
 
   private findAvailableName(base: string, existing: Set<string>): string {
@@ -346,20 +399,46 @@ function runTmux(args: string[]): string {
   return result.stdout.toString()
 }
 
+function isTmuxFormatError(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false
+  }
+
+  const message = error.message.toLowerCase()
+  return message.includes('unknown format') || message.includes('invalid format')
+}
+
 interface StatusResult {
   status: SessionStatus
   lastChanged: number
 }
 
+// Patterns that indicate the agent is actively working (thinking/processing)
+const ACTIVE_WORKING_PATTERNS: RegExp[] = [
+  // Codex: "(19s • esc to interrupt)" timer pattern
+  /esc to interrupt/i,
+  // Claude Code: "✳ Lollygagging… (ctrl+c to interrupt)" spinner pattern
+  /ctrl\+c to interrupt/i,
+]
+
+// Detects if terminal content shows active working indicators
+function detectsActiveWorking(content: string): boolean {
+  const cleaned = stripAnsi(content)
+  // Check entire content - status bars can be anywhere (top or bottom)
+  return ACTIVE_WORKING_PATTERNS.some((pattern) => pattern.test(cleaned))
+}
+
 function inferStatus(
   tmuxWindow: string,
-  capture: CapturePane = capturePaneContent,
+  capture: CapturePane = capturePaneWithDimensions,
   now: NowFn = Date.now
 ): StatusResult {
-  const content = capture(tmuxWindow)
-  if (content === null) {
+  const pane = capture(tmuxWindow)
+  if (pane === null) {
     return { status: 'unknown', lastChanged: now() }
   }
+
+  const { content, width, height } = pane
 
   // Check for permission prompts first (takes priority over working/waiting)
   if (detectsPermissionPrompt(content)) {
@@ -367,23 +446,135 @@ function inferStatus(
     return { status: 'permission', lastChanged: cached?.lastChanged ?? now() }
   }
 
+  // Check for active working indicators (timer with "esc to interrupt")
+  // This catches cases where the only visible change is the timer incrementing
+  const isActivelyWorking = detectsActiveWorking(content)
+
   const cached = paneContentCache.get(tmuxWindow)
-  const contentChanged = cached === undefined || cached.content !== content
+  let contentChanged = false
+  if (cached !== undefined) {
+    const dimensionsChanged =
+      cached.width !== width || cached.height !== height
+    if (dimensionsChanged) {
+      const oldNormalized = normalizeContent(cached.content)
+      const newNormalized = normalizeContent(content)
+      const resizeStats = isMeaningfulResizeChange(
+        oldNormalized,
+        newNormalized
+      )
+      contentChanged = resizeStats.changed
+    } else {
+      contentChanged = cached.content !== content
+    }
+  }
   const lastChanged = contentChanged ? now() : (cached?.lastChanged ?? now())
 
-  paneContentCache.set(tmuxWindow, { content, lastChanged })
+  paneContentCache.set(tmuxWindow, { content, width, height, lastChanged })
 
   // If no previous content, assume waiting (just started monitoring)
   if (cached === undefined) {
     return { status: 'waiting', lastChanged }
   }
 
-  // If content changed, it's working
-  return { status: contentChanged ? 'working' : 'waiting', lastChanged }
+  // If content changed OR active working indicator detected, it's working
+  return { status: contentChanged || isActivelyWorking ? 'working' : 'waiting', lastChanged }
 }
 
-function capturePaneContent(tmuxWindow: string): string | null {
+// Box-drawing and decorative characters (borders, lines, spacers)
+const DECORATIVE_LINE_PATTERN =
+  /^[\s─━│┃┄┅┆┇┈┉┊┋┌┐└┘├┤┬┴┼╔╗╚╝╠╣╦╩╬═╭╮╯╰▔▁]*$/
+const METADATA_LINE_PATTERNS: RegExp[] = [
+  /context left/i,
+  /background terminal running/i,
+  /\/ps to view/i,
+  /esc to interrupt/i,
+  /for shortcuts/i,
+]
+const TIMER_SEGMENT_PATTERN = /\(\d+s[^)]*\)/g
+const UI_GLYPH_PATTERN = /[•❯⏵⏺↵]/g
+
+function normalizeContent(content: string): string {
+  const lines = stripAnsi(content).split('\n')
+  return lines
+    .slice(-20)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .filter((line) => !DECORATIVE_LINE_PATTERN.test(line))
+    .filter(
+      (line) => !METADATA_LINE_PATTERNS.some((pattern) => pattern.test(line))
+    )
+    .map((line) => line.replace(TIMER_SEGMENT_PATTERN, '').trim())
+    .map((line) => line.replace(UI_GLYPH_PATTERN, ' ').trim())
+    .filter(Boolean)
+    .join(' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function tokenizeNormalized(content: string): string[] {
+  return content
+    .split(/\s+/)
+    .map((token) => token.trim())
+    .filter(Boolean)
+}
+
+function getTokenOverlapStats(left: string, right: string) {
+  const leftTokens = tokenizeNormalized(left)
+  const rightTokens = tokenizeNormalized(right)
+  const leftSet = new Set(leftTokens)
+  const rightSet = new Set(rightTokens)
+  let overlap = 0
+  for (const token of leftSet) {
+    if (rightSet.has(token)) {
+      overlap += 1
+    }
+  }
+  const leftSize = leftSet.size
+  const rightSize = rightSet.size
+  const minSize = Math.min(leftSize, rightSize)
+  const maxSize = Math.max(leftSize, rightSize)
+  const ratioMin = minSize === 0 ? 1 : overlap / minSize
+  const ratioMax = maxSize === 0 ? 1 : overlap / maxSize
+  return { overlap, leftSize, rightSize, ratioMin, ratioMax }
+}
+
+function isMeaningfulResizeChange(oldNormalized: string, newNormalized: string) {
+  if (oldNormalized === newNormalized) {
+    return { changed: false, ...getTokenOverlapStats(oldNormalized, newNormalized) }
+  }
+  const stats = getTokenOverlapStats(oldNormalized, newNormalized)
+  const maxSize = Math.max(stats.leftSize, stats.rightSize)
+  if (maxSize < 8) {
+    return { changed: true, ...stats }
+  }
+  const changed = stats.ratioMin < 0.9
+  return { changed, ...stats }
+}
+
+function capturePaneWithDimensions(tmuxWindow: string): PaneCapture | null {
   try {
+    const dimsResult = Bun.spawnSync(
+      [
+        'tmux',
+        'display-message',
+        '-t',
+        tmuxWindow,
+        '-p',
+        '#{pane_width}\t#{pane_height}',
+      ],
+      { stdout: 'pipe', stderr: 'pipe' }
+    )
+    if (dimsResult.exitCode !== 0) {
+      return null
+    }
+
+    const [widthText, heightText] = dimsResult.stdout
+      .toString()
+      .trim()
+      .split('\t')
+    const width = Number.parseInt(widthText ?? '', 10) || 80
+    const height = Number.parseInt(heightText ?? '', 10) || 24
+
     // Use -J to unwrap lines and only capture visible content (no scrollback)
     // This prevents false positives from scrollback buffer changes on window focus
     const result = Bun.spawnSync(
@@ -394,8 +585,13 @@ function capturePaneContent(tmuxWindow: string): string | null {
       return null
     }
     // Only compare last 30 lines to avoid scrollback noise
+    // First strip trailing empty lines so the "last 30" are actual content
     const lines = result.stdout.toString().split('\n')
-    return lines.slice(-30).join('\n')
+    while (lines.length > 0 && lines[lines.length - 1].trim() === '') {
+      lines.pop()
+    }
+    const content = lines.slice(-30).join('\n')
+    return { content, width, height }
   } catch {
     return null
   }
@@ -406,14 +602,40 @@ function inferAgentType(command: string): AgentType | undefined {
     return undefined
   }
 
-  const normalized = command.toLowerCase()
+  // Extract the base command name, handling:
+  // - Full paths: /usr/local/bin/claude -> claude
+  // - Package runners: npx codex, bunx claude -> codex, claude
+  // - Flags: claude --help, codex --search -> claude, codex
+  // - Quoted commands: "codex --search" -> codex
+  const normalized = command.toLowerCase().trim().replace(/^["']|["']$/g, '')
+  const parts = normalized.split(/\s+/)
 
-  if (normalized === 'claude' || normalized.startsWith('claude ')) {
-    return 'claude'
-  }
+  for (const part of parts) {
+    // Skip common package runners/prefixes
+    if (['npx', 'bunx', 'pnpm', 'yarn', 'env'].includes(part)) {
+      continue
+    }
+    // Skip environment variable assignments (KEY=value)
+    if (part.includes('=')) {
+      continue
+    }
+    // Skip flags
+    if (part.startsWith('-')) {
+      continue
+    }
 
-  if (normalized === 'codex' || normalized.startsWith('codex ')) {
-    return 'codex'
+    // Extract base name from path
+    const baseName = part.split('/').pop() || part
+
+    if (baseName === 'claude') {
+      return 'claude'
+    }
+    if (baseName === 'codex') {
+      return 'codex'
+    }
+
+    // Found a non-skippable command that isn't a known agent
+    break
   }
 
   return undefined

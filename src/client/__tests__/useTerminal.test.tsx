@@ -29,8 +29,8 @@ class TerminalMock {
   disposed = false
   selection = ''
   private dataHandler?: (data: string) => void
-  private scrollHandler?: () => void
   private keyHandler?: (event: KeyboardEvent) => boolean
+  private wheelHandler?: (event: WheelEvent) => boolean
 
   constructor() {
     TerminalMock.instances.push(this)
@@ -50,12 +50,13 @@ class TerminalMock {
     this.dataHandler = handler
   }
 
-  onScroll(handler: () => void) {
-    this.scrollHandler = handler
-  }
-
   attachCustomKeyEventHandler(handler: (event: KeyboardEvent) => boolean) {
     this.keyHandler = handler
+    return true
+  }
+
+  attachCustomWheelEventHandler(handler: (event: WheelEvent) => boolean) {
+    this.wheelHandler = handler
     return true
   }
 
@@ -89,8 +90,8 @@ class TerminalMock {
     this.dataHandler?.(data)
   }
 
-  emitScroll() {
-    this.scrollHandler?.()
+  emitWheel(event: WheelEvent) {
+    return this.wheelHandler?.(event)
   }
 
   emitKey(event: { key: string; type: string; ctrlKey?: boolean; metaKey?: boolean }) {
@@ -182,12 +183,14 @@ function TerminalHarness(props: {
   subscribe: (listener: (message: ServerMessage) => void) => () => void
   theme: ITheme
   fontSize: number
+  lineHeight?: number
   useWebGL?: boolean
   onScrollChange?: (isAtBottom: boolean) => void
 }) {
   const { containerRef } = useTerminal({
     ...props,
     tmuxTarget: props.tmuxTarget ?? null,
+    lineHeight: props.lineHeight ?? 1.4,
     useWebGL: props.useWebGL ?? true,
   })
   return <div ref={containerRef} />
@@ -351,11 +354,10 @@ describe('useTerminal', () => {
     // Output is wrapped in synchronized output sequences (BSU/ESU)
     expect(terminal.writes).toEqual([`\x1b[?2026hx\u23FA\uFE0Ey\x1b[?2026l`])
 
-    terminal.buffer.active.baseY = 10
-    terminal.buffer.active.viewportY = 0
+    terminal.selection = ''
 
     act(() => {
-      terminal.emitScroll()
+      terminal.emitWheel({ deltaY: 30 } as WheelEvent)
     })
 
     expect(scrollStates).toContain(false)
